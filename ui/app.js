@@ -25,6 +25,9 @@
     more: '<svg viewBox="0 0 16 16" fill="currentColor"><circle cx="3.5" cy="8" r="1.1"/><circle cx="8" cy="8" r="1.1"/><circle cx="12.5" cy="8" r="1.1"/></svg>',
     terminal: stroke('<path d="m3.5 5 3 3-3 3M8.5 11.5h4"/>'),
     close: stroke('<path d="M4 4l8 8M12 4l-8 8"/>'),
+    sparkle: stroke('<path d="M8 2.2 9.3 6.7 13.8 8 9.3 9.3 8 13.8 6.7 9.3 2.2 8 6.7 6.7z"/>'),
+    alert: stroke('<circle cx="8" cy="8" r="6"/><path d="M8 5v3.6M8 10.9v.2"/>'),
+    check: stroke('<path d="M3.5 8.5 6.5 11.5 12.5 4.5"/>'),
     back: stroke('<path d="M9.5 3.5 5 8l4.5 4.5"/>'),
     forward: stroke('<path d="M6.5 3.5 11 8l-4.5 4.5"/>'),
     globe: stroke('<circle cx="8" cy="8" r="5.5"/><path d="M2.5 8h11M8 2.5c1.8 1.8 1.8 9.2 0 11M8 2.5c-1.8 1.8-1.8 9.2 0 11"/>'),
@@ -56,7 +59,7 @@
     newCount: 1, // how many sessions the New session dialog opens at once
     view: "home", // "home" | "group" | "settings"
     transcripts: null, // past sessions from disk; null until the first load finishes
-    imageGen: { available: false, busy: false, error: "", images: [], selected: 0, previews: new Map(), startedAt: 0, timer: 0 },
+    imageGen: { available: false, busy: false, error: "", stopped: false, prompt: "", images: [], selected: 0, previews: new Map(), revealed: new Set(), startedAt: 0, timer: 0 },
     resumeFilter: "all", // "all" | "claude" | "codex"
     resumeQuery: "",
     resumeGroup: 0, // index of the group a resumed session is filed under
@@ -100,13 +103,10 @@
     imagegenForm: $("#imagegen-form"),
     imagegenPrompt: $("#imagegen-prompt"),
     imagegenGo: $("#imagegen-go"),
-    imagegenStatus: $("#imagegen-status"),
-    imagegenResults: $("#imagegen-results"),
-    imagegenThumbs: $("#imagegen-thumbs"),
-    imagegenImage: $("#imagegen-image"),
-    imagegenCopy: $("#imagegen-copy"),
-    imagegenCopyPath: $("#imagegen-copy-path"),
-    imagegenReveal: $("#imagegen-reveal"),
+    imagegenCount: $("#imagegen-count"),
+    imagegenIdeas: $("#imagegen-ideas"),
+    imagegenState: $("#imagegen-state"),
+    imagegenStage: $("#imagegen-stage"),
     resumeFilter: $("#resume-filter"),
     settings: $("#settings"),
     hotkeyChoices: $("#hotkey-choices"),
@@ -1553,8 +1553,15 @@
 
   // -------------------------------------------------------------- image gen
 
-  // Pictures made by Codex's image tool. The block shows only when this Codex can make images. Results are
-  // kept in state for this run only, so a re-render never loses them, and a restart starts empty.
+  // Pictures made by Codex's image tool. The block shows only when this Codex can make images. Results live in
+  // state for this run, so a re-render keeps them, and a restart starts empty.
+  const IMAGEGEN_IDEAS = [
+    "A red fox in fresh snow, flat illustration",
+    "App icon: a paper plane on indigo, minimal",
+    "Isometric server room with soft evening light",
+    "Watercolor map of a harbour town",
+  ];
+  const IMAGEGEN_LIMIT = 2000; // characters, as the backend allows
 
   // Asks Codex whether it can make images. Home asks again each time it shows, because the answer can change.
   async function refreshImageGen() {
@@ -1562,56 +1569,258 @@
     renderImageGen();
   }
 
-  // Draws the block from state only. It never reads the page, so a re-render keeps a prompt being typed.
+  // Draws the block from state only. Nothing here reads the composer's text, so a re-render keeps a prompt
+  // that is being typed.
   function renderImageGen() {
     const g = state.imageGen;
     el.imagegenBlock.hidden = !g.available;
-    el.imagegenGo.textContent = g.busy ? "Stop" : "Generate";
-    renderImageGenStatus();
-    el.imagegenResults.hidden = g.images.length === 0;
-    el.imagegenThumbs.replaceChildren(...g.images.map((path, i) => h("button", {
-      class: "imagegen-thumb",
-      type: "button",
-      role: "radio",
-      "aria-checked": String(i === g.selected),
-      title: folderName(path),
-      onclick: () => { g.selected = i; renderImageGen(); },
-    }, g.previews.has(path) ? h("img", { src: g.previews.get(path), alt: "" }) : h("span", { class: "imagegen-loading" }, "…"))));
+    el.imagegenGo.textContent = g.busy ? "Making…" : "Make pictures";
+    renderImageGenComposer();
+    renderImageGenPill();
+    renderImageGenStage();
+  }
+
+  // The composer's own state: the count near the limit, the ideas until something is written, and the button.
+  function renderImageGenComposer() {
+    const length = el.imagegenPrompt.value.length;
+    el.imagegenCount.textContent = `${length} / ${IMAGEGEN_LIMIT}`;
+    el.imagegenCount.hidden = length < IMAGEGEN_LIMIT * 0.8;
+    el.imagegenIdeas.hidden = length > 0;
+    el.imagegenGo.disabled = state.imageGen.busy || !el.imagegenPrompt.value.trim();
+  }
+
+  // The status in the header. While a picture is being made, it counts the time.
+  function renderImageGenPill() {
+    const g = state.imageGen;
+    const mode = g.busy ? "busy" : g.error ? "error" : g.images.length ? "done" : "idle";
+    const text = {
+      busy: `Generating · ${formatElapsed(Date.now() - g.startedAt)}`,
+      error: "Didn't work",
+      done: plural(g.images.length, "picture"),
+      idle: "Ready",
+    }[mode];
+    el.imagegenState.dataset.mode = mode;
+    // While a request runs, a rotating dither mark (2 by 2 dots) stands in for the idle dot.
+    const mark = mode === "busy"
+      ? h("span", { class: "imagegen-spinner", "aria-hidden": "true" }, h("i"), h("i"), h("i"), h("i"))
+      : null;
+    el.imagegenState.replaceChildren(...[mark, text].filter(Boolean));
+  }
+
+  // One of four stages: making, failed or stopped, showing results, or waiting for a first request.
+  function renderImageGenStage() {
+    const g = state.imageGen;
+    if (g.busy) el.imagegenStage.replaceChildren(imagegenBusy());
+    else if (g.error) el.imagegenStage.replaceChildren(imagegenMessage("error", g));
+    else if (g.stopped) el.imagegenStage.replaceChildren(imagegenMessage("stopped", g));
+    else if (g.images.length) el.imagegenStage.replaceChildren(imagegenResults());
+    else el.imagegenStage.replaceChildren(imagegenEmpty());
+  }
+
+  // Once a second while a request runs: the header clock and the clock on the stage.
+  function tickImageGen() {
+    const g = state.imageGen;
+    renderImageGenPill();
+    const clock = el.imagegenStage.querySelector("[data-elapsed]");
+    if (clock) clock.textContent = `Generating image · ${formatElapsed(Date.now() - g.startedAt)}`;
+  }
+
+  function imagegenEmpty() {
+    return h("div", { class: "imagegen-empty" },
+      h("span", { class: "imagegen-empty-mark", html: ICONS.sparkle }),
+      h("p", { class: "imagegen-empty-title" }, "Your pictures appear here"),
+      h("p", { class: "imagegen-empty-text" }, "Copy one, then press ⌘V in a session to attach it to your message."));
+  }
+
+  // While Codex draws: a dither field that stands in for the picture, and a clock with a Stop.
+  function imagegenBusy() {
+    const g = state.imageGen;
+    return h("div", { class: "imagegen-busy" },
+      ditherField(),
+      h("div", { class: "imagegen-busy-line" },
+        h("span", { class: "imagegen-busy-text", "data-elapsed": "", "aria-live": "polite" }, `Generating image · ${formatElapsed(Date.now() - g.startedAt)}`),
+        h("button", { class: "btn btn-outline", type: "button", onclick: () => invoke("imagegen_cancel").catch(() => {}) },
+          icon("stop"), "Stop")));
+  }
+
+  // A field of dots on a canvas, in the spirit of beui's dither loader: the dots drift on their own, and the pointer
+  // pushes them aside. It runs only while it is on the page, so a re-render that replaces it also stops it. With
+  // reduced motion it is drawn once and left still.
+  const DITHER_GAP = 10;
+  function ditherField() {
+    const canvas = h("canvas", { class: "imagegen-dither-canvas" });
+    const field = h("div", { class: "imagegen-dither", "aria-hidden": "true" }, canvas);
+    const context = canvas.getContext("2d");
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+    const pointer = { x: 0, y: 0, tx: 0, ty: 0, inside: false };
+    let width = 0;
+    let height = 0;
+    let color = "";
+    let painted = false;
+
+    // Keeps the canvas as sharp as the screen, and the same size as the field. False until the field has a size.
+    const fit = () => {
+      const rect = canvas.getBoundingClientRect();
+      if (!rect.width || !rect.height) return false;
+      if (rect.width !== width || rect.height !== height) {
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        width = rect.width;
+        height = rect.height;
+        canvas.width = Math.round(width * dpr);
+        canvas.height = Math.round(height * dpr);
+        context.setTransform(dpr, 0, 0, dpr, 0, 0);
+        color = getComputedStyle(canvas).color;
+        pointer.x = pointer.tx = width / 2;
+        pointer.y = pointer.ty = height / 2;
+      }
+      return true;
+    };
+
+    const paint = (time) => {
+      if (!pointer.inside) {
+        pointer.tx = width / 2 + (reduce ? 0 : Math.sin(time / 1700) * width * 0.12);
+        pointer.ty = height / 2 + (reduce ? 0 : Math.cos(time / 2100) * height * 0.1);
+      }
+      const follow = reduce ? 1 : pointer.inside ? 0.16 : 0.045;
+      pointer.x += (pointer.tx - pointer.x) * follow;
+      pointer.y += (pointer.ty - pointer.y) * follow;
+
+      const radius = Math.min(width, height) * 0.38;
+      const columns = Math.ceil(width / DITHER_GAP) + 1;
+      const rows = Math.ceil(height / DITHER_GAP) + 1;
+      const offsetX = (width - (columns - 1) * DITHER_GAP) / 2;
+      const offsetY = (height - (rows - 1) * DITHER_GAP) / 2;
+
+      context.clearRect(0, 0, width, height);
+      context.fillStyle = color;
+      for (let row = 0; row < rows; row += 1) {
+        for (let column = 0; column < columns; column += 1) {
+          const anchorX = offsetX + column * DITHER_GAP;
+          const anchorY = offsetY + row * DITHER_GAP;
+          const dx = anchorX - pointer.x;
+          const dy = anchorY - pointer.y;
+          const distance = Math.hypot(dx, dy);
+          const proximity = Math.max(0, 1 - distance / radius);
+          const influence = proximity * proximity * (3 - 2 * proximity);
+          const push = influence * influence * 9;
+          const x = anchorX + (distance > 0 ? (dx / distance) * push : 0);
+          const y = anchorY + (distance > 0 ? (dy / distance) * push : 0);
+          context.globalAlpha = 0.17 + influence * 0.72;
+          context.beginPath();
+          context.arc(x, y, 0.65 + influence * 0.85, 0, Math.PI * 2);
+          context.fill();
+        }
+      }
+      context.globalAlpha = 1;
+      painted = true;
+    };
+
+    // One loop per field. It ends when the field leaves the page, which is how a re-render retires it.
+    const tick = (time) => {
+      if (!canvas.isConnected) return;
+      if (fit()) paint(time);
+      if (!reduce || !painted) requestAnimationFrame(tick);
+    };
+
+    field.addEventListener("pointermove", (e) => {
+      const rect = canvas.getBoundingClientRect();
+      pointer.inside = true;
+      pointer.tx = e.clientX - rect.left;
+      pointer.ty = e.clientY - rect.top;
+    });
+    field.addEventListener("pointerleave", () => { pointer.inside = false; });
+    requestAnimationFrame(tick);
+    return field;
+  }
+
+  // A request that failed or was stopped. Both offer the same description again.
+  function imagegenMessage(kind, g) {
+    const failed = kind === "error";
+    return h("div", { class: `imagegen-message${failed ? " is-error" : ""}`, role: failed ? "alert" : "status" },
+      h("span", { class: "imagegen-message-mark", html: failed ? ICONS.alert : ICONS.stop }),
+      h("div", { class: "imagegen-message-body" },
+        h("p", { class: "imagegen-message-title" }, failed ? "No picture this time" : "Stopped before the pictures were done"),
+        failed ? h("p", { class: "imagegen-message-text" }, g.error) : null),
+      h("div", { class: "imagegen-message-actions" },
+        h("button", { class: "btn btn-outline", type: "button", onclick: () => { el.imagegenPrompt.value = g.prompt; renderImageGenComposer(); el.imagegenPrompt.focus(); } }, "Edit prompt"),
+        h("button", { class: "btn btn-primary", type: "button", onclick: () => generateImage(g.prompt) }, icon("restart"), "Try again")));
+  }
+
+  // The picture on show, its actions, and a strip of every picture the request made. Each picture is one step
+  // in the strip, and the arrow keys move between them.
+  function imagegenResults() {
+    const g = state.imageGen;
     const current = g.images[g.selected];
-    const shown = current ? g.previews.get(current) : null;
-    if (shown) el.imagegenImage.src = shown;
-    else el.imagegenImage.removeAttribute("src");
-    for (const button of [el.imagegenCopy, el.imagegenCopyPath, el.imagegenReveal]) button.disabled = !current;
+    const shown = g.previews.get(current);
+    const caption = h("span", { class: "imagegen-caption" }, `Picture ${g.selected + 1} of ${g.images.length}`);
+    const chip = h("span", { class: "imagegen-resolution" });
+    // A picture comes out of its blur once, the first time it is shown. Choosing it again shows it as it is.
+    const reveal = shown && !g.revealed.has(current);
+    if (reveal) g.revealed.add(current);
+    const picture = shown
+      ? h("img", {
+          class: `imagegen-picture${reveal ? " is-reveal" : ""}`,
+          src: shown,
+          alt: folderName(current),
+          onload: (e) => {
+            chip.textContent = `${e.currentTarget.naturalWidth} × ${e.currentTarget.naturalHeight}`;
+          },
+        })
+      : h("span", { class: "imagegen-loading" }, "Loading…");
+    return h("div", { class: "imagegen-results" },
+      h("div", { class: "imagegen-viewer" }, picture, chip),
+      h("p", { class: "imagegen-prompt-echo", title: g.prompt }, `“${g.prompt}”`),
+      h("div", { class: "imagegen-toolbar" },
+        h("button", { class: "btn btn-primary", type: "button", disabled: !shown, onclick: copyImage }, icon("copy"), "Copy image"),
+        h("button", { class: "btn btn-outline", type: "button", onclick: copyImagePath }, "Copy path"),
+        h("button", { class: "btn btn-outline", type: "button", onclick: revealImage }, icon("folder"), "Show in Finder"),
+        h("button", { class: "btn btn-outline", type: "button", title: "Make again with the same description", onclick: () => generateImage(g.prompt) }, icon("restart"), "Again")),
+      h("div", { class: "imagegen-strip-row" },
+        h("div", { class: "imagegen-strip", role: "radiogroup", "aria-label": "Pictures", onkeydown: onImageStripKey },
+          g.images.map((path, i) => h("button", {
+          class: "imagegen-thumb",
+          type: "button",
+          role: "radio",
+          "aria-checked": String(i === g.selected),
+          "aria-label": `Picture ${i + 1}`,
+          onclick: () => selectImage(i),
+        }, g.previews.has(path) ? h("img", { src: g.previews.get(path), alt: "" }) : h("span", { class: "imagegen-skeleton" })))),
+        caption),
+      h("p", { class: "imagegen-hint" }, "Copy image, then press ⌘V in a session. Claude and Codex read it as an attachment."));
   }
 
-  function renderImageGenStatus() {
+  function selectImage(index) {
+    state.imageGen.selected = index;
+    renderImageGenStage();
+  }
+
+  // Arrow keys move through the strip, and focus follows the picture that is chosen.
+  function onImageStripKey(e) {
     const g = state.imageGen;
-    const text = g.busy ? `Making the image · ${formatElapsed(Date.now() - g.startedAt)}` : g.error;
-    el.imagegenStatus.textContent = text || "";
-    el.imagegenStatus.classList.toggle("is-error", !g.busy && Boolean(g.error));
-    el.imagegenStatus.hidden = !text;
-  }
-
-  // The form's submit is Generate, or Stop while a picture is being made.
-  async function generateImage(e) {
+    const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
+    if (!step) return;
     e.preventDefault();
+    selectImage((g.selected + step + g.images.length) % g.images.length);
+    el.imagegenStage.querySelector('.imagegen-thumb[aria-checked="true"]')?.focus();
+  }
+
+  // Starts a request for `prompt`, or for what the composer holds. The pictures, or the reason there are none,
+  // replace the stage. A request already running is left alone.
+  async function generateImage(prompt) {
     const g = state.imageGen;
-    if (g.busy) {
-      invoke("imagegen_cancel").catch(() => {});
+    if (g.busy) return;
+    const text = (prompt ?? el.imagegenPrompt.value).trim();
+    if (!text) {
+      el.imagegenPrompt.focus();
       return;
     }
-    const prompt = el.imagegenPrompt.value.trim();
-    if (!prompt) {
-      g.error = "Describe the image first";
-      renderImageGen();
-      return;
-    }
-    Object.assign(g, { busy: true, error: "", startedAt: Date.now(), images: [], selected: 0 });
-    g.timer = setInterval(renderImageGenStatus, 1000);
+    // The composer keeps whatever the user has written. Again and Try again use the description they were made from.
+    Object.assign(g, { busy: true, error: "", stopped: false, prompt: text, startedAt: Date.now(), images: [], selected: 0 });
+    g.timer = setInterval(tickImageGen, 1000);
     renderImageGen();
     let outcome;
     try {
-      outcome = await invoke("imagegen_generate", { prompt });
+      outcome = await invoke("imagegen_generate", { prompt: text });
     } catch (err) {
       outcome = { error: errorText(err) };
     }
@@ -1619,14 +1828,17 @@
     g.busy = false;
     if (outcome.error) {
       g.error = outcome.error;
-    } else if (!outcome.stopped) {
+    } else if (outcome.stopped) {
+      g.stopped = true;
+    } else {
       g.images = outcome.images;
-      await Promise.all(outcome.images.map(loadImagePreview));
+      await Promise.all(g.images.map(loadImagePreview));
     }
     renderImageGen();
   }
 
-  // Each picture is read once through the backend, then kept for the rest of the run.
+  // Each picture is read once through the backend, then kept for the rest of the run. The stage is drawn once,
+  // after they are all read, so the picture's reveal is not cut short by a redraw.
   async function loadImagePreview(path) {
     const g = state.imageGen;
     if (g.previews.has(path)) return;
@@ -1634,7 +1846,7 @@
     if (result.ok) g.previews.set(path, result.value);
   }
 
-  // Enter makes the picture, and Shift+Enter starts a new line. Command+Enter is left alone: the window handler uses it.
+  // Enter makes the pictures, and Shift+Enter starts a new line. Command+Enter is left alone: the window handler uses it.
   function onImageGenKey(e) {
     if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;
     e.preventDefault();
@@ -1646,19 +1858,31 @@
     return g.images[g.selected] || null;
   }
 
-  // Copy image puts the picture on the clipboard as an image. A paste into a session attaches it.
-  async function copyImage() {
+  // Briefly relabels a button with a check, so the result shows where the user clicked.
+  function flashButton(button, text) {
+    if (!button) return;
+    if (!button.restore) button.restore = [...button.childNodes];
+    button.replaceChildren(icon("check"), document.createTextNode(text));
+    clearTimeout(button.flashTimer);
+    button.flashTimer = setTimeout(() => {
+      button.replaceChildren(...button.restore);
+      button.restore = null;
+    }, 1600);
+  }
+
+  // Copy image puts the picture on the clipboard as an image, so a paste into a session attaches it.
+  async function copyImage(e) {
     const path = selectedImage();
     if (!path) return;
     const result = await attempt("imagegen_copy", { path });
-    if (result.ok) toast("Copied. Press ⌘V in a session to attach it.", "info");
+    if (result.ok) flashButton(e.currentTarget, "Copied");
   }
 
-  async function copyImagePath() {
+  async function copyImagePath(e) {
     const path = selectedImage();
     if (!path) return;
     const result = await attempt("copy_text", { text: path });
-    if (result.ok) toast("Path copied", "info");
+    if (result.ok) flashButton(e.currentTarget, "Path copied");
   }
 
   function revealImage() {
@@ -1667,11 +1891,21 @@
   }
 
   function bindImageGen() {
-    el.imagegenForm.addEventListener("submit", generateImage);
+    el.imagegenIdeas.replaceChildren(...IMAGEGEN_IDEAS.map((text) => h("button", {
+      class: "imagegen-idea",
+      type: "button",
+      onclick: () => {
+        el.imagegenPrompt.value = text;
+        renderImageGenComposer();
+        el.imagegenPrompt.focus();
+      },
+    }, text)));
+    el.imagegenForm.addEventListener("submit", (e) => {
+      e.preventDefault();
+      generateImage();
+    });
     el.imagegenPrompt.addEventListener("keydown", onImageGenKey);
-    el.imagegenCopy.addEventListener("click", copyImage);
-    el.imagegenCopyPath.addEventListener("click", copyImagePath);
-    el.imagegenReveal.addEventListener("click", revealImage);
+    el.imagegenPrompt.addEventListener("input", renderImageGenComposer);
   }
 
   // ------------------------------------------------------------- resume

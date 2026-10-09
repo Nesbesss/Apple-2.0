@@ -950,39 +950,272 @@ kbd {
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
 }
 
-/* Image gen: the Home block that makes pictures with Codex */
+/* Image gen: a studio on Home. The composer sits left and the stage right. They stack on narrow windows. */
 
-.imagegen-form { display: flex; align-items: flex-end; gap: 10px; }
-.imagegen-prompt { flex: 1; min-width: 0; min-height: 56px; resize: vertical; padding: 8px 10px; line-height: 1.45; }
-.imagegen-go { height: 34px; min-width: 96px; justify-content: center; }
-.imagegen-status { margin-top: 10px; color: var(--muted); font-size: 12.5px; }
-.imagegen-status.is-error { color: var(--fail); }
-.imagegen-results { margin-top: 14px; display: grid; gap: 12px; }
-.imagegen-thumbs { display: flex; flex-wrap: wrap; gap: 8px; }
-.imagegen-thumb {
-  width: 72px;
-  height: 72px;
+.imagegen-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+.imagegen-pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--dim); }
+.imagegen-pill[data-mode="busy"] { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
+.imagegen-pill[data-mode="busy"]::before { display: none; }
+.imagegen-pill[data-mode="done"] { color: var(--done); }
+.imagegen-pill[data-mode="done"]::before { background: var(--done); }
+.imagegen-pill[data-mode="error"] { color: var(--fail); }
+.imagegen-pill[data-mode="error"]::before { background: var(--fail); }
+
+.imagegen-studio {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: minmax(250px, 320px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: stretch;
+}
+.imagegen-compose,
+.imagegen-stage {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--card);
+}
+.imagegen-compose { display: flex; flex-direction: column; gap: 10px; padding: 14px; }
+.imagegen-label { color: var(--muted); font-size: 12px; }
+.imagegen-prompt {
+  min-height: 120px;
+  resize: vertical;
+  padding: 10px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--canvas);
+  color: var(--text);
+  font: 13px/1.5 var(--font-ui);
+}
+.imagegen-prompt::placeholder { color: var(--dim); }
+.imagegen-prompt:focus { outline: none; border-color: var(--accent); }
+.imagegen-ideas { display: flex; flex-wrap: wrap; gap: 6px; }
+.imagegen-ideas[hidden] { display: none; }
+.imagegen-idea {
+  height: auto;
+  padding: 4px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+  text-align: left;
+}
+.imagegen-idea:hover { color: var(--text); border-color: var(--selected); background: var(--hover); }
+.imagegen-compose-foot { margin-top: auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.imagegen-count { color: var(--dim); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.imagegen-keys { color: var(--dim); font-size: 11.5px; }
+.imagegen-keys kbd { font-size: 10.5px; }
+.imagegen-go { margin-left: auto; height: 30px; }
+
+.imagegen-stage {
+  min-width: 0;
+  min-height: 340px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Empty: a quiet placeholder that says where the pictures will go */
+.imagegen-empty {
+  flex: 1;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 6px;
+  padding: 24px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  color: var(--muted);
+  text-align: center;
+}
+.imagegen-empty-mark {
+  width: 34px;
+  height: 34px;
+  margin-bottom: 4px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--hover);
+  color: var(--accent);
+}
+.imagegen-empty-mark svg,
+.imagegen-message-mark svg { width: 16px; height: 16px; display: block; }
+.imagegen-empty-title { color: var(--text); font-weight: 600; }
+.imagegen-empty-text { max-width: 300px; font-size: 12.5px; line-height: 1.5; }
+
+/* Busy: a dither field stands in for the picture, with the clock and a Stop under it */
+.imagegen-busy { flex: 1; display: flex; flex-direction: column; gap: 14px; }
+.imagegen-dither {
+  position: relative;
+  flex: 1;
+  min-height: 260px;
+  overflow: hidden;
+  border-radius: 10px;
+  background: var(--canvas);
+  color: var(--text);
+  cursor: crosshair;
+}
+.imagegen-dither-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; color: var(--muted); }
+.imagegen-skeleton {
+  display: block;
+  border-radius: 10px;
+  background: linear-gradient(90deg, var(--hover) 25%, var(--selected) 50%, var(--hover) 75%) 0 0 / 400px 100%;
+  animation: imagegen-shimmer 1.4s linear infinite;
+}
+@keyframes imagegen-shimmer {
+  from { background-position: -200px 0; }
+  to { background-position: 200px 0; }
+}
+
+/* The header mark while a request runs: four dots in a 2 by 2 grid, turning */
+.imagegen-spinner {
+  width: 12px;
+  height: 12px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+  color: var(--accent);
+  animation: imagegen-turn 2.4s linear infinite;
+}
+.imagegen-spinner i { width: 100%; height: 100%; border-radius: 1px; background: currentColor; }
+.imagegen-spinner i:nth-child(2),
+.imagegen-spinner i:nth-child(3) { opacity: 0.55; }
+@keyframes imagegen-turn { to { transform: rotate(360deg); } }
+
+/* A picture comes out of its blur once, when it first appears */
+.imagegen-picture.is-reveal { animation: imagegen-reveal 0.5s ease-out both; }
+@keyframes imagegen-reveal {
+  from { opacity: 0; filter: blur(6px) saturate(0.7); transform: scale(1.015); }
+  to { opacity: 1; filter: none; transform: none; }
+}
+.imagegen-viewer { position: relative; }
+.imagegen-resolution {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--canvas) 75%, transparent);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+.imagegen-resolution:empty { display: none; }
+.imagegen-prompt-echo {
+  margin-top: -4px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.imagegen-busy-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.imagegen-busy-text { font-variant-numeric: tabular-nums; }
+
+/* Failed or stopped: the reason, and what to do next */
+.imagegen-message {
+  flex: 1;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 12px;
+  padding: 24px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  text-align: center;
+}
+.imagegen-message-mark {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--hover);
+  color: var(--muted);
+}
+.imagegen-message.is-error .imagegen-message-mark {
+  background: color-mix(in srgb, var(--fail) 16%, transparent);
+  color: var(--fail);
+}
+.imagegen-message-title { font-weight: 600; }
+.imagegen-message-text { max-width: 380px; color: var(--muted); font-size: 12.5px; line-height: 1.5; user-select: text; -webkit-user-select: text; }
+.imagegen-message-actions { display: flex; gap: 8px; }
+
+/* Results: the picture on a checkerboard (so transparency shows), its actions, and a strip of every picture */
+.imagegen-results { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+.imagegen-viewer {
+  flex: 1;
+  min-height: 240px;
+  max-height: 420px;
   display: grid;
   place-items: center;
   overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--card);
+  border-radius: 10px;
+  background: repeating-conic-gradient(var(--hover) 0 25%, var(--canvas) 0 50%) 0 0 / 18px 18px;
 }
-.imagegen-thumb[aria-checked="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
-.imagegen-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.imagegen-loading { color: var(--dim); }
-.imagegen-preview { margin: 0; display: grid; gap: 10px; justify-items: start; }
-.imagegen-preview img {
+.imagegen-picture {
   max-width: 100%;
   max-height: 420px;
+  display: block;
+  object-fit: contain;
+  border-radius: 4px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+}
+.imagegen-loading { color: var(--dim); }
+.imagegen-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.imagegen-caption { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.imagegen-toolbar .btn { gap: 6px; height: 28px; padding: 0 10px; font-size: 12px; }
+.imagegen-strip-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.imagegen-strip-row .imagegen-strip { flex: 1; min-width: 0; }
+.imagegen-strip-row .imagegen-caption { flex: none; }
+.imagegen-toolbar .btn:disabled { opacity: 0.4; }
+.btn .icon svg { width: 13px; height: 13px; display: block; }
+.imagegen-hint { color: var(--dim); font-size: 11.5px; }
+.imagegen-strip { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
+.imagegen-thumb {
+  flex: none;
+  width: 64px;
+  height: 64px;
+  padding: 0;
+  overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--card);
-  object-fit: contain;
+  background: var(--canvas);
+  transition: transform 120ms ease, box-shadow 120ms ease;
 }
-.imagegen-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.imagegen-actions .btn:disabled { opacity: 0.4; }
+.imagegen-thumb img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.imagegen-thumb .imagegen-skeleton { width: 100%; height: 100%; border-radius: 0; }
+.imagegen-thumb:hover { transform: translateY(-1px); }
+.imagegen-thumb[aria-checked="true"] { border-color: transparent; box-shadow: 0 0 0 2px var(--accent); }
+
+@media (max-width: 760px) {
+  .imagegen-studio { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .imagegen-skeleton,
+  .imagegen-spinner,
+  .imagegen-picture.is-reveal { animation: none; }
+  .imagegen-thumb { transition: none; }
+}
 
 /* Browser cards: an address bar over the page, and a hint until a page is open */
 
