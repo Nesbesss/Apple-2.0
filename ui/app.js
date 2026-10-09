@@ -25,6 +25,8 @@
     more: '<svg viewBox="0 0 16 16" fill="currentColor"><circle cx="3.5" cy="8" r="1.1"/><circle cx="8" cy="8" r="1.1"/><circle cx="12.5" cy="8" r="1.1"/></svg>',
     terminal: stroke('<path d="m3.5 5 3 3-3 3M8.5 11.5h4"/>'),
     close: stroke('<path d="M4 4l8 8M12 4l-8 8"/>'),
+    back: stroke('<path d="M9.5 3.5 5 8l4.5 4.5"/>'),
+    forward: stroke('<path d="M6.5 3.5 11 8l-4.5 4.5"/>'),
     globe: stroke('<circle cx="8" cy="8" r="5.5"/><path d="M2.5 8h11M8 2.5c1.8 1.8 1.8 9.2 0 11M8 2.5c-1.8 1.8-1.8 9.2 0 11"/>'),
     pencil: stroke('<path d="M10.25 3.25 12.75 5.75 6 12.5H3.5v-2.5z"/>'),
     folder: stroke('<path d="M2.5 4.5h3.25l1.5 1.5h6.25v6.5h-11z"/>'),
@@ -421,9 +423,15 @@
 
   // First display: attach xterm, size it, then start the agent.
   async function openCard(card) {
-    // A browser has no terminal to attach or process to start. It keeps its own body, and the grid re-tries
-    // this harmlessly on each render.
-    if (findSession(card.id)?.kind === "browser") return;
+    // A browser has no terminal and no process. Its page starts once, when its card first shows, if it has an address.
+    const session = findSession(card.id);
+    if (session && session.kind === "browser") {
+      if (!card.browserStarted) {
+        card.browserStarted = true;
+        if (session.url) navigateBrowser(card.id, session.url);
+      }
+      return;
+    }
     card.opened = true;
     card.term.open(card.body);
     fitCard(card);
@@ -486,28 +494,61 @@
     const dot = h("span", { class: "dot" });
     const name = h("span", { class: "card-name" });
     const meta = h("span", { class: "card-meta" });
-    const status = h("span", { class: "card-status" });
+    const browser = session.kind === "browser";
+    const status = h("span", { class: "card-status", hidden: browser });
     const restart = h("button", { class: "btn", title: "Restart session", onclick: () => restartWithConfirm(session.id) }, icon("restart"), "Restart");
     const expand = h("button", { class: "icon-btn", onclick: () => toggleMaximize(session.id) });
     const more = h("button", { class: "icon-btn", title: "More", "aria-label": "More", onclick: (e) => openCardMenu(session.id, e.currentTarget) }, icon("more"));
     const head = h("header", { class: "card-head", ondblclick: (e) => { if (!e.target.closest("button")) toggleMaximize(session.id); } },
       dot, kindMark(session.kind), name, meta, status, h("span", { class: "spacer" }), restart, expand, more);
-    const body = h("div", { class: "card-body" });
+    // A browser's page is a native view that covers the body, so the body only shows before a page is open.
+    const body = h("div", { class: "card-body" }, browser ? h("div", { class: "browser-empty" }, "Type an address above, or a search.") : null);
+    const bar = browser ? browserBar(session.id) : null;
     // The entrance animation is one-shot: drop its class once it ends, so moving the card later does not replay it.
     const root = h("article", {
       class: "card",
       "data-id": session.id,
       onmousedown: () => focusCard(session.id),
-      onanimationend: (e) => { if (e.target === e.currentTarget) e.currentTarget.classList.remove("arrive"); },
-    }, head, body);
-    return { root, body, dot, name, meta, status, restart, expand };
+      onanimationend: (e) => {
+        if (e.target !== e.currentTarget) return;
+        e.currentTarget.classList.remove("arrive");
+        syncBrowsers();
+      },
+    }, head, bar, body);
+    return { root, body, dot, name, meta, status, restart, expand, urlInput: bar ? bar.querySelector(".browser-url") : null };
+  }
+
+  // The address bar of a browser session. Its page is a native view placed under this bar.
+  function browserBar(id) {
+    const step = (name, label, command) => h("button", {
+      class: "icon-btn", type: "button", title: label, "aria-label": label,
+      onclick: () => attempt(command, { id }),
+    }, icon(name));
+    return h("div", { class: "browser-bar" },
+      step("back", "Back", "browser_back"),
+      step("forward", "Forward", "browser_forward"),
+      step("restart", "Reload", "browser_reload"),
+      h("input", {
+        class: "input mono browser-url", type: "text", spellcheck: "false", placeholder: "Search or enter an address",
+        "aria-label": "Address",
+        onkeydown: (e) => { if (e.key === "Enter") { e.preventDefault(); navigateBrowser(id, e.currentTarget.value); } },
+      }));
+  }
+
+  function hostOf(url) {
+    try { return new URL(url).host; } catch { return ""; }
   }
 
   function updateCardInfo(card, session) {
     const maximized = state.maximizedId === session.id;
     card.name.textContent = session.name;
-    card.meta.textContent = `${session.kind} · ${shortPath(session.cwd)}`;
-    card.meta.title = session.cwd;
+    if (session.kind === "browser") {
+      card.meta.textContent = `browser · ${hostOf(session.url) || "no page yet"}`;
+      card.meta.title = session.url || "";
+    } else {
+      card.meta.textContent = `${session.kind} · ${shortPath(session.cwd)}`;
+      card.meta.title = session.cwd;
+    }
     card.expand.replaceChildren(icon(maximized ? "collapse" : "expand"));
     card.expand.title = maximized ? "Restore (\u2318\u21A9)" : "Expand (\u2318\u21A9)";
     card.expand.setAttribute("aria-label", card.expand.title);
@@ -941,6 +982,7 @@
     });
     focusCard(state.focusedId, { focusTerminal: false });
     clearSeenDone();
+    syncBrowsers();
   }
 
   // ---------------------------------------------------------------- groups
@@ -1091,7 +1133,9 @@
       menu.remove();
       activeMenu = null;
       closeActiveMenu = null;
+      syncBrowsers();
     };
+    syncBrowsers();
   }
 
   function moveMenuFocus(step) {
@@ -1117,6 +1161,7 @@
       $("#confirm-form").onsubmit = (e) => { e.preventDefault(); answer = true; dialog.close(); };
       $("#confirm-cancel").onclick = () => dialog.close();
       dialog.showModal();
+      syncBrowsers();
     });
   }
 
@@ -1140,6 +1185,7 @@
       };
       $("#prompt-cancel").onclick = () => dialog.close();
       dialog.showModal();
+      syncBrowsers();
       input.focus();
       input.select();
     });
@@ -1187,6 +1233,7 @@
     $("#session-start").disabled = false;
     renderRecent();
     el.sessionDialog.showModal();
+    syncBrowsers();
     if (kind === "browser") $("#session-url").focus();
     else ($("#session-cwd").value ? $("#session-name") : $("#session-cwd")).focus();
   }
@@ -1501,6 +1548,61 @@
     $("#colors-reset").addEventListener("click", resetColors);
   }
 
+  // ------------------------------------------------------------- browser
+
+  // A browser page is a native view over the window, so it cannot be layered under HTML. It is placed on its
+  // card's body, and it is hidden whenever a dialog, a menu, the image viewer, or another view covers the column.
+  const mainCovered = () => anyDialogOpen() || closeActiveMenu !== null || !el.viewer.hidden || state.view !== "group";
+
+  // Where a card's page belongs, in window coordinates. Parked cards and covered columns hide it.
+  function browserFrame(card) {
+    const rect = card.body.getBoundingClientRect();
+    const visible = card.root.parentNode === el.grid && rect.width > 0 && rect.height > 0 && !mainCovered();
+    return { x: rect.left, y: rect.top, width: rect.width, height: rect.height, visible };
+  }
+
+  // Positions every browser page that has an address. Requests are batched to one per frame, because a
+  // single render can move several cards.
+  let browserSyncQueued = false;
+  function syncBrowsers() {
+    if (browserSyncQueued) return;
+    browserSyncQueued = true;
+    requestAnimationFrame(() => {
+      browserSyncQueued = false;
+      const items = [];
+      cards.forEach((card) => {
+        const session = findSession(card.id);
+        if (session && session.kind === "browser" && session.url) items.push({ id: card.id, ...browserFrame(card) });
+      });
+      if (items.length) invoke("browser_sync", { items }).catch(() => {});
+    });
+  }
+
+  // Opens an address, or a search, in a browser session. The first address creates the page.
+  async function navigateBrowser(id, text) {
+    const card = cards.get(id);
+    if (!card) return;
+    const result = await attempt("browser_navigate", { id, url: text, frame: browserFrame(card) });
+    if (!result.ok) return;
+    const session = findSession(id);
+    if (session) {
+      session.url = result.value;
+      updateCardInfo(card, session);
+    }
+    if (card.urlInput) card.urlInput.value = result.value;
+    syncBrowsers();
+  }
+
+  // The page moved on its own (a link, a redirect, back or forward). Keep the session's address and the bar.
+  function onBrowserPage({ id, url }) {
+    const session = findSession(id);
+    if (session) session.url = url;
+    const card = cards.get(id);
+    if (!card) return;
+    if (card.urlInput && document.activeElement !== card.urlInput) card.urlInput.value = url;
+    if (session) updateCardInfo(card, session);
+  }
+
   // ---------------------------------------------------------- image links
 
   // A path to an image in a terminal becomes a link. A double click opens it in the viewer. Only paths that
@@ -1589,12 +1691,14 @@
     el.viewerImage.src = result.value;
     el.viewer.hidden = false;
     el.viewerClose.focus();
+    syncBrowsers();
   }
 
   function closeImage() {
     if (el.viewer.hidden) return;
     el.viewer.hidden = true;
     el.viewerImage.removeAttribute("src");
+    syncBrowsers();
   }
 
   function bindImageViewer() {
@@ -2026,6 +2130,8 @@
     $("#count-less").addEventListener("click", () => setCount(state.newCount - 1));
     $("#count-more").addEventListener("click", () => setCount(state.newCount + 1));
     bindImageViewer();
+    window.addEventListener("resize", syncBrowsers);
+    [el.sessionDialog, el.confirmDialog, el.promptDialog].forEach((dialog) => dialog.addEventListener("close", syncBrowsers));
     $("#browse").addEventListener("click", browseFolder);
     el.alertsToggle.addEventListener("click", toggleAlerts);
     bindHomeAndSettings();
@@ -2063,6 +2169,7 @@
       listen("dictation", ({ payload }) => onDictationEvent(payload)),
       listen("store-changed", ({ payload }) => applyStore(payload)),
       listen("quit-requested", ({ payload }) => confirmQuit(payload)),
+      listen("browser-page", ({ payload }) => onBrowserPage(payload)),
     ]);
   }
 

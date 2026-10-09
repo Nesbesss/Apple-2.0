@@ -92,7 +92,7 @@ pub fn rename_group(index: usize, name: String, state: State<'_, AppState>) -> C
 }
 
 #[tauri::command]
-pub fn delete_group(index: usize, state: State<'_, AppState>) -> CmdResult<Store> {
+pub fn delete_group(index: usize, app: AppHandle, state: State<'_, AppState>) -> CmdResult<Store> {
     let mut store = state.store.lock().unwrap();
     if store.groups.len() <= 1 {
         return Err("The last group cannot be deleted".into());
@@ -110,6 +110,7 @@ pub fn delete_group(index: usize, state: State<'_, AppState>) -> CmdResult<Store
         if let Some(mut pty) = ptys.remove(&session.id) {
             pty.stop();
         }
+        web::close_browser(&app, &session.id);
     }
     Ok(snapshot)
 }
@@ -289,10 +290,11 @@ pub fn resume_session(
 }
 
 #[tauri::command]
-pub fn remove_session(id: String, state: State<'_, AppState>) -> CmdResult<Store> {
+pub fn remove_session(id: String, app: AppHandle, state: State<'_, AppState>) -> CmdResult<Store> {
     if let Some(mut pty) = state.ptys.lock().unwrap().remove(&id) {
         pty.stop();
     }
+    web::close_browser(&app, &id);
     let mut store = state.store.lock().unwrap();
     for group in &mut store.groups {
         group.sessions.retain(|s| s.id != id);

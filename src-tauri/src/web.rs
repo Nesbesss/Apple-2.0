@@ -1,6 +1,147 @@
 //! Addresses for the built-in browser. Whatever the user types becomes an http or https URL, or a search.
 
-use tauri::Url;
+use crate::AppState;
+use serde::{Deserialize, Serialize};
+use tauri::{
+    webview::{NewWindowResponse, PageLoadEvent},
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Url, Webview, WebviewBuilder, WebviewUrl,
+};
+
+/// Where a browser page sits, in window coordinates (CSS pixels), and whether it shows at all.
+#[derive(Deserialize, Clone, Copy, Debug)]
+pub struct Frame {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    pub visible: bool,
+}
+
+/// A browser session's frame, keyed by its session id.
+#[derive(Deserialize)]
+pub struct BrowserFrame {
+    pub id: String,
+    #[serde(flatten)]
+    pub frame: Frame,
+}
+
+/// What the UI hears when a page moves: which session, and the address it now shows.
+#[derive(Serialize, Clone)]
+struct PageEvent {
+    id: String,
+    url: String,
+}
+
+/// The webview label of a browser session. Labels are how a page is found again from its session.
+fn label(id: &str) -> String {
+    format!("browser-{id}")
+}
+
+/// Places a page at `frame`, or hides it. A page is only shown when it has room to be seen.
+fn apply_frame(webview: &Webview, frame: Frame) -> Result<(), String> {
+    if !frame.visible || frame.width < 1.0 || frame.height < 1.0 {
+        return webview.hide().map_err(|e| e.to_string());
+    }
+    webview
+        .set_bounds(tauri::Rect {
+            position: LogicalPosition::new(frame.x, frame.y).into(),
+            size: LogicalSize::new(frame.width, frame.height).into(),
+        })
+        .map_err(|e| e.to_string())?;
+    webview.show().map_err(|e| e.to_string())
+}
+
+/// Moves and shows or hides the browser pages the UI reports. A session with no page yet is skipped.
+#[tauri::command]
+pub fn browser_sync(items: Vec<BrowserFrame>, app: AppHandle) {
+    for item in items {
+        if let Some(webview) = app.get_webview(&label(&item.id)) {
+            let _ = apply_frame(&webview, item.frame);
+        }
+    }
+}
+
+/// Opens `url` in browser session `id`, creating its page the first time, and places it at `frame`.
+/// Returns the address that was opened, after normalizing what was typed.
+#[tauri::command]
+pub fn browser_navigate(id: String, url: String, frame: Frame, app: AppHandle) -> Result<String, String> {
+    let address = normalize_url(&url)?;
+    match app.get_webview(&label(&id)) {
+        Some(webview) => {
+            webview.navigate(address.clone()).map_err(|e| e.to_string())?;
+            apply_frame(&webview, frame)?;
+        }
+        None => create_page(&app, &id, address.clone(), frame)?,
+    }
+    remember_url(&app, &id, address.as_str());
+    Ok(address.to_string())
+}
+
+fn create_page(app: &AppHandle, id: &str, address: Url, frame: Frame) -> Result<(), String> {
+    let window = app.get_window("main").ok_or("The main window is not open")?;
+    let events = app.clone();
+    let session = id.to_string();
+    let page = WebviewBuilder::new(label(id), WebviewUrl::External(address))
+        // Only web pages. A page cannot move itself to a file, or to the app's own webview.
+        .on_navigation(|url| matches!(url.scheme(), "http" | "https"))
+        // A page that opens a window does not get one. Its address bar stays the only way to move.
+        .on_new_window(|_, _| NewWindowResponse::Deny)
+        .on_page_load(move |_webview, payload| {
+            let url = payload.url().to_string();
+            let _ = events.emit("browser-page", PageEvent { id: session.clone(), url: url.clone() });
+            if matches!(payload.event(), PageLoadEvent::Finished) {
+                remember_url(&events, &session, &url);
+            }
+        });
+    let webview = window
+        .add_child(page, LogicalPosition::new(frame.x, frame.y), LogicalSize::new(frame.width.max(1.0), frame.height.max(1.0)))
+        .map_err(|e| e.to_string())?;
+    apply_frame(&webview, frame)
+}
+
+/// Keeps the address a browser session shows, so the session opens there again.
+fn remember_url(app: &AppHandle, id: &str, url: &str) {
+    let state = app.state::<AppState>();
+    let mut store = state.store.lock().unwrap();
+    let mut changed = false;
+    for session in store.groups.iter_mut().flat_map(|g| g.sessions.iter_mut()) {
+        if session.id == id && session.url.as_deref() != Some(url) {
+            session.url = Some(url.to_string());
+            changed = true;
+        }
+    }
+    if changed {
+        let _ = store.save();
+    }
+}
+
+/// Runs a script in a browser page, for back, forward and reload.
+fn run_in_page(app: &AppHandle, id: &str, script: &str) -> Result<(), String> {
+    let webview = app.get_webview(&label(id)).ok_or("That page is not open")?;
+    webview.eval(script).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn browser_back(id: String, app: AppHandle) -> Result<(), String> {
+    run_in_page(&app, &id, "history.back()")
+}
+
+#[tauri::command]
+pub fn browser_forward(id: String, app: AppHandle) -> Result<(), String> {
+    run_in_page(&app, &id, "history.forward()")
+}
+
+#[tauri::command]
+pub fn browser_reload(id: String, app: AppHandle) -> Result<(), String> {
+    run_in_page(&app, &id, "location.reload()")
+}
+
+/// Closes a session's page when the session goes: removed, or its group deleted.
+pub fn close_browser(app: &AppHandle, id: &str) {
+    if let Some(webview) = app.get_webview(&label(id)) {
+        let _ = webview.close();
+    }
+}
 
 /// Turns what the user typed into a page to open. A bare host gets https, and text that is not an
 /// address becomes a search. Only web addresses are accepted, so a `javascript:` or `file:` address
