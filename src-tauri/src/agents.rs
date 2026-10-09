@@ -31,7 +31,7 @@ pub fn launch_for(session: &Session) -> Launch {
     Launch { program: shell, args: full }
 }
 
-fn login_shell() -> String {
+pub(crate) fn login_shell() -> String {
     std::env::var("SHELL")
         .ok()
         .filter(|s| s.ends_with("zsh") || s.ends_with("bash"))

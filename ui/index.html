@@ -121,6 +121,29 @@
           <div class="group-cards" id="group-cards"></div>
         </section>
 
+        <!-- Image gen: shown only when this Codex can make images. The picture is copied, then pasted into a chat. -->
+        <section class="page-block imagegen" id="imagegen-block" aria-label="Image gen" hidden>
+          <h2 class="block-title">Image gen</h2>
+          <p class="setting-hint">Describe a picture and Codex makes it. Copy the result, then press ⌘V in a session to attach it to your message.</p>
+          <form class="imagegen-form" id="imagegen-form" autocomplete="off">
+            <textarea class="input imagegen-prompt" id="imagegen-prompt" rows="2" maxlength="2000" spellcheck="false"
+              placeholder="A red fox in fresh snow, flat illustration" aria-label="Describe the image"></textarea>
+            <button class="btn btn-primary imagegen-go" id="imagegen-go" type="submit">Generate</button>
+          </form>
+          <p class="imagegen-status" id="imagegen-status" role="status" hidden></p>
+          <div class="imagegen-results" id="imagegen-results" hidden>
+            <div class="imagegen-thumbs" id="imagegen-thumbs" role="radiogroup" aria-label="Generated images"></div>
+            <figure class="imagegen-preview">
+              <img id="imagegen-image" alt="">
+              <div class="imagegen-actions">
+                <button class="btn btn-primary" id="imagegen-copy" type="button">Copy image</button>
+                <button class="btn btn-outline" id="imagegen-copy-path" type="button">Copy path</button>
+                <button class="btn btn-outline" id="imagegen-reveal" type="button">Show in Finder</button>
+              </div>
+            </figure>
+          </div>
+        </section>
+
         <section class="page-block">
           <div class="block-head">
             <h2 class="block-title">Resume a session</h2>

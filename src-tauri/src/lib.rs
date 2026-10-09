@@ -3,6 +3,7 @@ mod agents;
 mod claude_limits;
 mod commands;
 mod dictation;
+mod imagegen;
 mod images;
 mod pty;
 mod sound;
@@ -81,6 +82,11 @@ pub fn run() {
             web::browser_back,
             web::browser_forward,
             web::browser_reload,
+            imagegen::imagegen_available,
+            imagegen::imagegen_generate,
+            imagegen::imagegen_cancel,
+            imagegen::imagegen_copy,
+            imagegen::imagegen_reveal,
             commands::remove_session,
             commands::rename_session,
             commands::move_session,

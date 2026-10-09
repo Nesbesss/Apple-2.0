@@ -54,6 +54,7 @@
     newCount: 1, // how many sessions the New session dialog opens at once
     view: "home", // "home" | "group" | "settings"
     transcripts: null, // past sessions from disk; null until the first load finishes
+    imageGen: { available: false, busy: false, error: "", images: [], selected: 0, previews: new Map(), startedAt: 0, timer: 0 },
     resumeFilter: "all", // "all" | "claude" | "codex"
     resumeQuery: "",
     resumeGroup: 0, // index of the group a resumed session is filed under
@@ -93,6 +94,17 @@
     resumeList: $("#resume-list"),
     resumeGroup: $("#resume-group"),
     resumeSearch: $("#resume-search"),
+    imagegenBlock: $("#imagegen-block"),
+    imagegenForm: $("#imagegen-form"),
+    imagegenPrompt: $("#imagegen-prompt"),
+    imagegenGo: $("#imagegen-go"),
+    imagegenStatus: $("#imagegen-status"),
+    imagegenResults: $("#imagegen-results"),
+    imagegenThumbs: $("#imagegen-thumbs"),
+    imagegenImage: $("#imagegen-image"),
+    imagegenCopy: $("#imagegen-copy"),
+    imagegenCopyPath: $("#imagegen-copy-path"),
+    imagegenReveal: $("#imagegen-reveal"),
     resumeFilter: $("#resume-filter"),
     settings: $("#settings"),
     hotkeyChoices: $("#hotkey-choices"),
@@ -1322,7 +1334,10 @@
     if (state.view === view && view !== "home") return;
     state.view = view;
     renderAll();
-    if (view === "home") loadTranscripts();
+    if (view === "home") {
+      loadTranscripts();
+      refreshImageGen();
+    }
   }
 
   const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
@@ -1343,6 +1358,7 @@
   function renderHome() {
     renderHomeStatus();
     renderHomeHint();
+    renderImageGen();
     renderResumeGroups();
     renderResumeList();
   }
@@ -1392,6 +1408,129 @@
     return h("button", { class: `group-card${index === state.selected ? " current" : ""}`, type: "button", onclick: () => selectGroup(index) },
       h("span", { class: "group-card-name" }, group.name),
       h("span", { class: "group-card-meta" }, parts.join(" · ")));
+  }
+
+  // -------------------------------------------------------------- image gen
+
+  // Pictures made by Codex's image tool. The block shows only when this Codex can make images. Results are
+  // kept in state for this run only, so a re-render never loses them, and a restart starts empty.
+
+  // Asks Codex whether it can make images. Home asks again each time it shows, because the answer can change.
+  async function refreshImageGen() {
+    state.imageGen.available = (await invoke("imagegen_available").catch(() => false)) === true;
+    renderImageGen();
+  }
+
+  // Draws the block from state only. It never reads the page, so a re-render keeps a prompt being typed.
+  function renderImageGen() {
+    const g = state.imageGen;
+    el.imagegenBlock.hidden = !g.available;
+    el.imagegenGo.textContent = g.busy ? "Stop" : "Generate";
+    renderImageGenStatus();
+    el.imagegenResults.hidden = g.images.length === 0;
+    el.imagegenThumbs.replaceChildren(...g.images.map((path, i) => h("button", {
+      class: "imagegen-thumb",
+      type: "button",
+      role: "radio",
+      "aria-checked": String(i === g.selected),
+      title: folderName(path),
+      onclick: () => { g.selected = i; renderImageGen(); },
+    }, g.previews.has(path) ? h("img", { src: g.previews.get(path), alt: "" }) : h("span", { class: "imagegen-loading" }, "…"))));
+    const current = g.images[g.selected];
+    const shown = current ? g.previews.get(current) : null;
+    if (shown) el.imagegenImage.src = shown;
+    else el.imagegenImage.removeAttribute("src");
+    for (const button of [el.imagegenCopy, el.imagegenCopyPath, el.imagegenReveal]) button.disabled = !current;
+  }
+
+  function renderImageGenStatus() {
+    const g = state.imageGen;
+    const text = g.busy ? `Making the image · ${formatElapsed(Date.now() - g.startedAt)}` : g.error;
+    el.imagegenStatus.textContent = text || "";
+    el.imagegenStatus.classList.toggle("is-error", !g.busy && Boolean(g.error));
+    el.imagegenStatus.hidden = !text;
+  }
+
+  // The form's submit is Generate, or Stop while a picture is being made.
+  async function generateImage(e) {
+    e.preventDefault();
+    const g = state.imageGen;
+    if (g.busy) {
+      invoke("imagegen_cancel").catch(() => {});
+      return;
+    }
+    const prompt = el.imagegenPrompt.value.trim();
+    if (!prompt) {
+      g.error = "Describe the image first";
+      renderImageGen();
+      return;
+    }
+    Object.assign(g, { busy: true, error: "", startedAt: Date.now(), images: [], selected: 0 });
+    g.timer = setInterval(renderImageGenStatus, 1000);
+    renderImageGen();
+    let outcome;
+    try {
+      outcome = await invoke("imagegen_generate", { prompt });
+    } catch (err) {
+      outcome = { error: errorText(err) };
+    }
+    clearInterval(g.timer);
+    g.busy = false;
+    if (outcome.error) {
+      g.error = outcome.error;
+    } else if (!outcome.stopped) {
+      g.images = outcome.images;
+      await Promise.all(outcome.images.map(loadImagePreview));
+    }
+    renderImageGen();
+  }
+
+  // Each picture is read once through the backend, then kept for the rest of the run.
+  async function loadImagePreview(path) {
+    const g = state.imageGen;
+    if (g.previews.has(path)) return;
+    const result = await attempt("read_image", { path });
+    if (result.ok) g.previews.set(path, result.value);
+  }
+
+  // Enter makes the picture, and Shift+Enter starts a new line. Command+Enter is left alone: the window handler uses it.
+  function onImageGenKey(e) {
+    if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;
+    e.preventDefault();
+    if (!state.imageGen.busy) el.imagegenForm.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
+  }
+
+  function selectedImage() {
+    const g = state.imageGen;
+    return g.images[g.selected] || null;
+  }
+
+  // Copy image puts the picture on the clipboard as an image. A paste into a session attaches it.
+  async function copyImage() {
+    const path = selectedImage();
+    if (!path) return;
+    const result = await attempt("imagegen_copy", { path });
+    if (result.ok) toast("Copied. Press ⌘V in a session to attach it.", "info");
+  }
+
+  async function copyImagePath() {
+    const path = selectedImage();
+    if (!path) return;
+    const result = await attempt("copy_text", { text: path });
+    if (result.ok) toast("Path copied", "info");
+  }
+
+  function revealImage() {
+    const path = selectedImage();
+    if (path) attempt("imagegen_reveal", { path });
+  }
+
+  function bindImageGen() {
+    el.imagegenForm.addEventListener("submit", generateImage);
+    el.imagegenPrompt.addEventListener("keydown", onImageGenKey);
+    el.imagegenCopy.addEventListener("click", copyImage);
+    el.imagegenCopyPath.addEventListener("click", copyImagePath);
+    el.imagegenReveal.addEventListener("click", revealImage);
   }
 
   // ------------------------------------------------------------- resume
@@ -1806,6 +1945,7 @@
     el.accentCustom.addEventListener("input", (e) => setColor("accent", e.target.value));
     el.accentCustom.addEventListener("change", (e) => setSetting("accent", e.target.value));
     $("#colors-reset").addEventListener("click", resetColors);
+    bindImageGen();
   }
 
   // ------------------------------------------------------------- browser
@@ -2462,6 +2602,7 @@
     // Home is the landing view. A group's sessions start when that group is opened.
     applyStore(store);
     loadTranscripts();
+    refreshImageGen();
   }
 
   start();
