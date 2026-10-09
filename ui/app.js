@@ -1023,17 +1023,15 @@
 
   // ------------------------------------------------------------- dictation
 
-  // Hold Option+Command to talk; release to type the words into the focused session.
-  // The chord only shows the HUD after a short hold, so shortcuts like Option+Command+I stay silent.
-  const DICTATION_REVEAL_DELAY = 150; // ms
-  const CHIMES = {
-    start: [659.25, 987.77], // E5, B5: rising
-    stop: [987.77, 659.25], // falling
-    done: [783.99, 1174.66], // G5, D6
-  };
+  // Hold Option to talk; release to type the words into the focused session.
+  // The mic opens after a short hold, so a quick Option tap or an Option+key shortcut does nothing.
+  const DICTATION_HOLD_DELAY = 180; // ms of hold before the mic opens
+  // macOS system sounds, played natively by the backend.
+  const SOUNDS = { start: "Tink", stop: "Pop", done: "Glass" };
   const dictation = {
     state: "idle", // "idle" | "held" (recording) | "ignoring" (a shortcut was typed during the chord)
     shown: false, // the HUD is up
+    recording: false, // the mic is open
     timer: 0,
     frame: 0,
     level: 0, // smoothed mic level, drives the bars
@@ -1048,37 +1046,11 @@
   };
 
   const isModifierKey = (e) => e.key === "Meta" || e.key === "Alt";
-  const chordDown = (e) => e.metaKey && e.altKey && !e.ctrlKey && !e.shiftKey;
+  const chordDown = (e) => e.altKey && !e.metaKey && !e.ctrlKey && !e.shiftKey;
   const tail = (text) => (text.length > 72 ? `…${text.slice(-72)}` : text);
 
-  // Two sine tones with a soft overtone make a glassy, bell-like sound. Synthesised, so no assets.
-  function playChime(name) {
-    try {
-      if (!dictation.audio) dictation.audio = new AudioContext();
-      const ctx = dictation.audio;
-      if (ctx.state === "suspended") ctx.resume();
-      const t0 = ctx.currentTime + 0.01;
-      CHIMES[name].forEach((freq, i) => {
-        const start = t0 + i * 0.09;
-        const end = start + 0.5;
-        const out = ctx.createGain();
-        out.gain.setValueAtTime(0.0001, start);
-        out.gain.exponentialRampToValueAtTime(0.09, start + 0.015);
-        out.gain.exponentialRampToValueAtTime(0.0001, end);
-        out.connect(ctx.destination);
-        [[1, 1], [2.01, 0.18]].forEach(([ratio, level]) => {
-          const osc = ctx.createOscillator();
-          const partial = ctx.createGain();
-          partial.gain.value = level;
-          osc.frequency.value = freq * ratio;
-          osc.connect(partial).connect(out);
-          osc.start(start);
-          osc.stop(end);
-        });
-      });
-    } catch {
-      // No audio output: the HUD still shows the state.
-    }
+  function playSound(name) {
+    invoke("play_sound", { name: SOUNDS[name] }).catch(() => {});
   }
 
   function setHud(mode, text) {
@@ -1119,40 +1091,40 @@
     const active = document.activeElement;
     if (active && active.matches("input, textarea") && !active.classList.contains("xterm-helper-textarea")) return;
     dictation.state = "held";
-    dictation.timer = setTimeout(revealDictation, DICTATION_REVEAL_DELAY);
-    attempt("dictation_start").then((result) => {
-      if (!result.ok) {
-        clearTimeout(dictation.timer);
-        dictation.state = "idle";
-        hideHud();
-      }
-    });
+    dictation.timer = setTimeout(startListening, DICTATION_HOLD_DELAY);
   }
 
-  function revealDictation() {
+  function startListening() {
     if (dictation.state !== "held") return;
+    dictation.recording = true;
     dictation.shown = true;
     setHud("listening", "Listening…");
-    playChime("start");
+    playSound("start");
     if (!dictation.frame) animateHud();
+    attempt("dictation_start").then((result) => {
+      if (!result.ok) cancelDictation();
+    });
   }
 
   function releaseDictation() {
     clearTimeout(dictation.timer);
     dictation.state = "idle";
     dictation.target = 0;
+    if (!dictation.recording) return; // released before the mic opened, so there is nothing to stop
+    dictation.recording = false;
     if (dictation.shown) {
       setHud("processing", hud.text.textContent);
-      playChime("stop");
+      playSound("stop");
     }
     attempt("dictation_stop");
   }
 
   function cancelDictation(nextState = "idle") {
-    if (dictation.state === "idle") return;
-    const wasRecording = dictation.state === "held";
+    const wasRecording = dictation.recording;
+    if (dictation.state === "idle" && !wasRecording) return;
     clearTimeout(dictation.timer);
     dictation.state = nextState;
+    dictation.recording = false;
     dictation.shown = false;
     hideHud();
     if (wasRecording) attempt("dictation_cancel");
@@ -1174,7 +1146,7 @@
       // paste() honours bracketed paste, so newlines do not submit the prompt early.
       card.term.paste(spoken);
       setHud("done", tail(spoken));
-      playChime("done");
+      playSound("done");
       hideHud(1200);
     } else {
       // Nothing to type into: leave the words on screen so they are not lost.
@@ -1210,24 +1182,20 @@
     }
   }
 
-  // Keys pressed during the chord are shortcuts (Option+Command+I, Option+Command+Esc, ...).
-  // Dictation yields to them, and the keys do not reach the terminal.
+  // Option is the only chord. Keys typed while it is held are ordinary Option+key input, so they
+  // reach the terminal, and dictation steps aside.
   function onDictationKeyDown(e) {
     if (dictation.state === "idle") {
       if (!chordDown(e) || anyDialogOpen()) return;
       beginDictation();
       return;
     }
-    if (isModifierKey(e)) return;
-    e.preventDefault();
-    e.stopPropagation();
-    if (dictation.state === "held") cancelDictation("ignoring");
+    if (dictation.state === "held" && !isModifierKey(e)) cancelDictation("ignoring");
   }
 
   function onDictationKeyUp(e) {
-    if (dictation.state === "idle" || (e.metaKey && e.altKey)) return;
-    if (dictation.state === "held") releaseDictation();
-    dictation.state = "idle";
+    if (dictation.state === "idle" || e.altKey) return; // another key was released while Option is still down
+    releaseDictation();
   }
 
   // ------------------------------------------------------- alerts and quitting

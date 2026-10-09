@@ -22,3 +22,18 @@ pub fn agent_done() {
             .status();
     });
 }
+
+/// System sounds the UI may ask for by name. Anything else is refused, so the UI never picks a file.
+const UI_SOUNDS: &[&str] = &["Tink", "Pop", "Glass", "Ping"];
+
+/// Plays one of `UI_SOUNDS` at a low volume. Runs on its own thread so nothing waits on it.
+pub fn play_ui_sound(name: &str) -> Result<(), String> {
+    if !UI_SOUNDS.contains(&name) {
+        return Err(format!("Unknown sound: {name}"));
+    }
+    let path = format!("/System/Library/Sounds/{name}.aiff");
+    std::thread::spawn(move || {
+        let _ = std::process::Command::new("afplay").args(["-v", "0.3", &path]).status();
+    });
+    Ok(())
+}

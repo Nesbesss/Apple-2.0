@@ -329,3 +329,8 @@ pub fn session_status(ids: Vec<String>, state: State<'_, AppState>) -> HashMap<S
         })
         .collect()
 }
+
+#[tauri::command]
+pub fn play_sound(name: String) -> CmdResult<()> {
+    sound::play_ui_sound(&name)
+}
