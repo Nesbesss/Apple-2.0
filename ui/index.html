@@ -9,18 +9,25 @@
 </head>
 <body>
   <aside class="sidebar">
-    <div class="sidebar-head" data-tauri-drag-region></div>
-    <div class="sidebar-section">
+    <div class="sidebar-head" data-tauri-drag-region>
+      <span class="brand-mark" data-icon="deck" data-tauri-drag-region></span>
+      <span class="brand" data-tauri-drag-region>Session Deck</span>
+    </div>
+    <div class="sidebar-section" title="⌘] next session · ⌘[ previous session · ⌘J next finished session">
       <span class="section-label" data-tauri-drag-region>Groups</span>
       <button class="icon-btn" id="new-group" title="New group" aria-label="New group" data-icon="plus"></button>
     </div>
     <nav class="group-list" id="group-list" aria-label="Groups"></nav>
+    <div class="sidebar-foot">
+      <button class="btn" id="alerts-toggle" aria-pressed="true">Done alerts: On</button>
+    </div>
   </aside>
 
   <main class="main">
     <header class="toolbar" data-tauri-drag-region>
       <h1 class="toolbar-title" id="group-title" data-tauri-drag-region></h1>
       <span class="toolbar-count" id="group-count" data-tauri-drag-region></span>
+      <div class="summary" id="summary"></div>
       <span class="spacer" data-tauri-drag-region></span>
       <button class="btn" id="new-claude"><span class="logo logo-claude" data-logo="claude"></span>New Claude</button>
       <button class="btn" id="new-codex"><span class="logo logo-openai" data-logo="openai"></span>New Codex</button>
@@ -30,8 +37,19 @@
       <div class="grid" id="grid"></div>
       <div class="empty" id="empty" hidden>
         <div class="empty-mark" data-icon="terminal"></div>
-        <h2>No sessions in this group</h2>
-        <p>Start a Claude or Codex session to see it here.<br>Press <kbd>&#8984;</kbd><kbd>N</kbd> to begin.</p>
+        <h2 id="empty-title">No sessions in this group</h2>
+        <p>Each session runs in its own folder, and every one stays visible here.</p>
+        <div class="empty-actions">
+          <button class="empty-action" id="empty-claude">
+            <span class="logo logo-claude" data-logo="claude"></span>
+            <span class="empty-action-text"><strong>New Claude session</strong><small>Claude Code in a folder</small></span>
+          </button>
+          <button class="empty-action" id="empty-codex">
+            <span class="logo logo-openai" data-logo="openai"></span>
+            <span class="empty-action-text"><strong>New Codex session</strong><small>Codex CLI in a folder</small></span>
+          </button>
+        </div>
+        <p class="empty-hint"><kbd>&#8984;</kbd><kbd>N</kbd> starts a session from anywhere</p>
       </div>
     </section>
   </main>
@@ -39,6 +57,13 @@
   <!-- Hidden holder that keeps terminals of off-screen cards alive. -->
   <div id="parking" hidden></div>
   <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <!-- Dictation pill: a dim dot at the right edge, expanded while Option+Command is held. -->
+  <div class="dictation" id="dictation" role="status" aria-live="polite" data-mode="idle">
+    <span class="dictation-dot" aria-hidden="true"></span>
+    <span class="dictation-bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
+    <span class="dictation-text" id="dictation-text"></span>
+  </div>
 
   <dialog id="new-session" class="dialog">
     <form id="new-session-form" autocomplete="off" spellcheck="false">
@@ -51,7 +76,7 @@
 
       <label class="field">
         <span class="field-label">Name <em>optional</em></span>
-        <input class="input" id="session-name" type="text" placeholder="Defaults to the agent name">
+        <input class="input" id="session-name" type="text" maxlength="80" placeholder="Defaults to the agent name">
       </label>
 
       <div class="field">
@@ -60,6 +85,7 @@
           <input class="input mono" id="session-cwd" type="text" placeholder="/path/to/project">
           <button type="button" class="btn btn-outline" id="browse">Browse</button>
         </div>
+        <div class="recent" id="recent" hidden></div>
       </div>
 
       <p class="form-error" id="session-error" role="alert" hidden></p>
@@ -67,6 +93,17 @@
       <div class="dialog-actions">
         <button type="button" class="btn" id="session-cancel">Cancel</button>
         <button type="submit" class="btn btn-primary" id="session-start">Start</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="prompt" class="dialog dialog-narrow">
+    <form id="prompt-form" autocomplete="off" spellcheck="false">
+      <h2 class="dialog-title" id="prompt-title"></h2>
+      <input class="input" id="prompt-input" type="text" maxlength="80" aria-label="Name">
+      <div class="dialog-actions">
+        <button type="button" class="btn" id="prompt-cancel">Cancel</button>
+        <button type="submit" class="btn btn-primary" id="prompt-ok">Save</button>
       </div>
     </form>
   </dialog>

@@ -1,11 +1,17 @@
 use crate::{
-    activity,
-    pty,
-    store::{Group, Kind, Session, Store},
+    activity, pty, sound,
+    store::{default_name, Group, Kind, Session, Store},
     AppState,
 };
 use serde::Serialize;
-use std::{collections::HashMap, fs, path::PathBuf};
+use std::{
+    collections::HashMap,
+    fs,
+    io::Write,
+    path::PathBuf,
+    process::{Command, Stdio},
+    sync::atomic::Ordering,
+};
 use tauri::{AppHandle, State};
 use uuid::Uuid;
 
@@ -20,6 +26,17 @@ pub struct SessionStatus {
 
 fn save(store: &Store) -> CmdResult<()> {
     store.save().map_err(|e| format!("Could not save groups: {e}"))
+}
+
+/// Applies `edit` to a copy, saves it, and only then replaces the live store. A failed save
+/// leaves both memory and groups.json unchanged.
+fn edit_store(state: &AppState, edit: impl FnOnce(&mut Store) -> CmdResult<()>) -> CmdResult<Store> {
+    let mut store = state.store.lock().unwrap();
+    let mut next = store.clone();
+    edit(&mut next)?;
+    save(&next)?;
+    *store = next.clone();
+    Ok(next)
 }
 
 fn find_session(state: &AppState, id: &str) -> CmdResult<Session> {
@@ -117,7 +134,15 @@ pub fn create_session(
         let store = state.store.lock().unwrap();
         let group = store.groups.get(group_index).ok_or("That group no longer exists")?;
         match name.trim() {
-            "" => format!("{} {}", kind.label(), group.sessions.len() + 1),
+            "" => {
+                // The folder name says far more than "Claude 3", and it is what people look for.
+                let folder = cwd
+                    .file_name()
+                    .map(|f| f.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| kind.label().to_string());
+                let taken: Vec<&str> = group.sessions.iter().map(|s| s.name.as_str()).collect();
+                default_name(&folder, &taken)
+            }
             typed => typed.to_string(),
         }
     };
@@ -150,15 +175,87 @@ pub fn remove_session(id: String, state: State<'_, AppState>) -> CmdResult<Store
     Ok(store.clone())
 }
 
+/// Shows the session's folder in Finder. Only folders the deck already knows about can be shown.
+#[tauri::command]
+pub fn reveal_session_folder(id: String, state: State<'_, AppState>) -> CmdResult<()> {
+    let session = find_session(&state, &id)?;
+    let status = Command::new("open")
+        .arg("-R")
+        .arg(&session.cwd)
+        .status()
+        .map_err(|e| format!("Could not open Finder: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("Finder could not show that folder".into())
+    }
+}
+
+#[tauri::command]
+pub fn rename_session(id: String, name: String, state: State<'_, AppState>) -> CmdResult<Store> {
+    edit_store(&state, |store| store.rename_session(&id, &name))
+}
+
+/// Moves a session to another group. Its agent keeps running, so nothing is restarted.
+#[tauri::command]
+pub fn move_session(id: String, group_index: usize, state: State<'_, AppState>) -> CmdResult<Store> {
+    edit_store(&state, |store| store.move_session(&id, group_index))
+}
+
+/// Puts text on the clipboard. Goes through pbcopy because WKWebView clipboard access
+/// depends on the page's gesture state.
+#[tauri::command]
+pub fn copy_text(text: String) -> CmdResult<()> {
+    let copy_error = |e: std::io::Error| format!("Could not copy: {e}");
+    let mut child = Command::new("pbcopy").stdin(Stdio::piped()).spawn().map_err(copy_error)?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(text.as_bytes()).map_err(copy_error)?;
+    }
+    child.wait().map_err(copy_error)?;
+    Ok(())
+}
+
+/// Shows a macOS notification. Title and body are passed as arguments, never pasted into the
+/// script, so a session name cannot change what runs.
+#[tauri::command]
+pub fn notify(title: String, body: String) {
+    if !sound::alerts_enabled() {
+        return;
+    }
+    std::thread::spawn(move || {
+        let _ = Command::new("osascript")
+            .args(["-e", "on run argv", "-e", "display notification (item 2 of argv) with title (item 1 of argv)", "-e", "end run"])
+            .arg(&title)
+            .arg(&body)
+            .status();
+    });
+}
+
+#[tauri::command]
+pub fn set_alerts(enabled: bool) {
+    sound::set_alerts_enabled(enabled);
+}
+
+/// Quits after the user has confirmed while agents were still working.
+#[tauri::command]
+pub fn quit_app(app: AppHandle) {
+    crate::QUIT_CONFIRMED.store(true, Ordering::SeqCst);
+    app.exit(0);
+}
+
 /// Starts the agent if it has never been started in this run. An exited session is left as is,
 /// so showing a card never restarts a process on its own.
+///
+/// Lock order: the session is looked up before `ptys` is taken, so `ptys` is never held while
+/// `store` is locked. The check, spawn and insert happen under one `ptys` guard, so two calls
+/// for the same id cannot both start a process.
 #[tauri::command]
 pub fn ensure_session(id: String, app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
+    let session = find_session(&state, &id)?;
     let mut ptys = state.ptys.lock().unwrap();
     if ptys.contains_key(&id) {
         return Ok(());
     }
-    let session = find_session(&state, &id)?;
     let pty = pty::spawn(&app, &session)?;
     ptys.insert(id, pty);
     Ok(())

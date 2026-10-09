@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Session Deck listens while you hold Option and Command, then types what you said into the focused session.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Session Deck turns your speech into text on this Mac. Nothing is sent to a server.</string>
+</dict>
+</plist>

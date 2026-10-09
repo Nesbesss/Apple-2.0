@@ -51,6 +51,24 @@ pub fn is_working(session: &Session, pty: &Pty, busy: &HashSet<String>) -> bool 
     }
 }
 
+/// How many sessions are busy right now. Used to decide whether quitting needs a confirmation.
+pub fn working_count(state: &AppState) -> usize {
+    let sessions: Vec<Session> = state
+        .store
+        .lock()
+        .unwrap()
+        .groups
+        .iter()
+        .flat_map(|g| g.sessions.clone())
+        .collect();
+    let busy = claude_busy_ids();
+    let ptys = state.ptys.lock().unwrap();
+    sessions
+        .iter()
+        .filter(|s| ptys.get(&s.id).is_some_and(|p| p.is_running() && is_working(s, p, &busy)))
+        .count()
+}
+
 /// Background loop: emits `activity` on every change, plays the done sound on working -> idle,
 /// and discovers Codex session ids once they appear on disk.
 pub fn spawn_watcher(app: AppHandle) {
