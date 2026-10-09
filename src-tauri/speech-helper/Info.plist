@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>com.nesbes.sessiondeck.speechdev.speech-helper</string>
+    <string>com.nesbes.sessiondeck.speech-helper</string>
     <key>CFBundleName</key>
     <string>speech-helper</string>
     <key>CFBundleVersion</key>
