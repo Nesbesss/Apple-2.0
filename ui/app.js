@@ -1401,6 +1401,7 @@
     el.statusColors.replaceChildren(...STATUS_COLORS.map(({ key, label }) => colorRow(key, label)));
     el.alertsToggle.setAttribute("aria-checked", String(alertsOn()));
     renderClaudeLimit();
+    renderClaudeStatus();
   }
 
   // A radio-style option. The checked one is outlined.
@@ -1443,6 +1444,7 @@
   const IDLE_TOKENS_PER_HOUR = 10000; // below this, Claude counts as idle rather than close to its limit
   let usageSnapshot = null;
   let usageBusy = false;
+  let claudeLimits = null; // Claude Code's own limit windows, once its status line is connected
 
   function formatTokens(n) {
     if (n >= 1e6) return `${(n / 1e6).toFixed(n >= 1e8 ? 0 : 1)}M`;
@@ -1506,12 +1508,28 @@
   }
 
   function renderUsage() {
+    const now = Date.now();
+    const official = claudeLimits && claudeLimits.status === "live" ? claudeLimits : null;
+    if (official) {
+      // Claude Code's own windows: the same figures /usage shows.
+      $("#usage-claude .usage-name").textContent = "Claude 5h";
+      const five = official.fiveHour ? officialClaudeUsage(official.fiveHour, now) : null;
+      if (five) setUsageRow($("#usage-claude"), five.share, five.text, five.title);
+      else setUsageRow($("#usage-claude"), null, "no 5h report yet", "Claude Code has not reported its five-hour window yet.");
+      const week = official.sevenDay ? officialClaudeUsage(official.sevenDay, now) : null;
+      $("#usage-claude-week").hidden = !week;
+      if (week) setUsageRow($("#usage-claude-week"), week.share, week.text, week.title);
+    } else {
+      $("#usage-claude .usage-name").innerHTML = "Claude <em>est.</em>";
+      $("#usage-claude-week").hidden = true;
+      if (usageSnapshot) {
+        const claude = claudeUsage(usageSnapshot.claude);
+        setUsageRow($("#usage-claude"), claude.share, claude.text, claude.title);
+      }
+    }
+
     const snap = usageSnapshot;
     if (!snap) return;
-    const now = Date.now();
-    const claude = claudeUsage(snap.claude);
-    setUsageRow($("#usage-claude"), claude.share, claude.text, claude.title);
-
     const codex = snap.codex;
     const five = codex && codex.fiveHour ? codexUsage(codex.fiveHour, now) : null;
     const week = codex && codex.weekly ? codexUsage(codex.weekly, now) : null;
@@ -1526,14 +1544,60 @@
     usageBusy = true;
     try {
       usageSnapshot = await invoke("usage_snapshot");
+      claudeLimits = await invoke("claude_limits").catch(() => null);
       renderUsage();
-      if (state.view === "settings") renderClaudeLimit();
+      if (state.view === "settings") {
+        renderClaudeLimit();
+        renderClaudeStatus();
+      }
     } catch {
       setUsageRow($("#usage-claude"), null, "unavailable", "Usage could not be read from this Mac's logs.");
       setUsageRow($("#usage-codex"), null, "unavailable", "Usage could not be read from this Mac's logs.");
     } finally {
       usageBusy = false;
     }
+  }
+
+  // One of Claude Code's own windows, from its status line. The share is what /usage shows.
+  function officialClaudeUsage(win, now) {
+    const used = win.usedPercent;
+    const resets = `resets in ${formatSpan(win.resetsAtMs - now)}`;
+    const title = `Claude Code reported this ${formatSpan(now - win.observedAtMs)} ago. The same figure /usage shows.`;
+    if (used <= 0) return { share: 0, text: `unused · ${resets}`, title };
+    return { share: used / 100, text: `${Math.round(used)}% · ${resets}`, title };
+  }
+
+  const CLAUDE_STATUS_LINE_TEXT = "Nesa will write ~/.claude/nesa-statusline.py and set statusLine in ~/.claude/settings.json. Your other settings stay as they are, and the original file is kept as settings.json.nesa-backup. While the status line is on, Claude Code hides some footer hints, such as the hold-space-to-speak hint.";
+
+  // The Settings row for Claude Code's status line. Connecting adds the script and the entry; disconnecting removes them.
+  function renderClaudeStatus() {
+    const status = claudeLimits ? claudeLimits.status : "off";
+    const captured = claudeLimits && claudeLimits.capturedAtMs;
+    $("#claude-status-text").textContent = status === "live"
+      ? `Connected · updated ${captured ? formatSpan(Date.now() - captured) : "just now"} ago`
+      : status === "waiting" ? "Connected. Waiting for Claude's first reply in a session." : "Not connected";
+    const action = $("#claude-status-action");
+    action.disabled = false;
+    action.textContent = status === "off" ? "Connect…" : "Disconnect";
+    action.dataset.action = status === "off" ? "connect" : "disconnect";
+    // Once Claude's own numbers are in, the estimate's limit field is not needed.
+    $("#claude-calibrate-row").hidden = status === "live";
+  }
+
+  async function toggleClaudeStatus() {
+    const action = $("#claude-status-action");
+    if (!action.dataset.action) return;
+    const connecting = action.dataset.action === "connect";
+    const ok = await confirmDialog(connecting
+      ? { title: "Connect Claude usage?", text: CLAUDE_STATUS_LINE_TEXT, label: "Connect", danger: false }
+      : { title: "Disconnect Claude usage?", text: "Nesa removes its entry from Claude's settings.json and deletes its script and last report. Other settings stay.", label: "Disconnect", danger: false });
+    if (!ok) return;
+    const result = await attempt(connecting ? "connect_claude_limits" : "disconnect_claude_limits");
+    if (!result.ok) return;
+    claudeLimits = result.value;
+    renderClaudeStatus();
+    renderUsage();
+    toast(connecting ? "Connected. Claude's limits appear after its next reply." : "Disconnected.", "ok");
   }
 
   function renderClaudeLimit() {
@@ -1594,6 +1658,7 @@
     $("#claude-calibrate").addEventListener("click", calibrateClaudeLimit);
     $("#claude-calibrate-input").addEventListener("keydown", (e) => { if (e.key === "Enter") calibrateClaudeLimit(); });
     $("#claude-limit-clear").addEventListener("click", clearClaudeLimit);
+    $("#claude-status-action").addEventListener("click", toggleClaudeStatus);
     el.resumeSearch.addEventListener("input", (e) => {
       state.resumeQuery = e.target.value;
       renderResumeList();

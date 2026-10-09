@@ -22,10 +22,16 @@
     </div>
     <nav class="group-list" id="group-list" aria-label="Groups"></nav>
     <div class="sidebar-foot">
-      <!-- Usage on this Mac. Codex's numbers are its own; Claude's are an estimate against the limit set in Settings. -->
-      <button class="usage" id="usage" type="button" title="Usage on this Mac. Click to set your Claude limit.">
+      <!-- Usage on this Mac. Claude's numbers are Claude Code's own once its status line is connected, and an
+           estimate against the limit set in Settings until then. Codex's numbers are its own. -->
+      <button class="usage" id="usage" type="button" title="Usage on this Mac. Click for details.">
         <span class="usage-row" id="usage-claude">
           <span class="usage-name">Claude <em>est.</em></span>
+          <span class="usage-track"><span class="usage-fill"></span></span>
+          <span class="usage-text">–</span>
+        </span>
+        <span class="usage-row" id="usage-claude-week" hidden>
+          <span class="usage-name">Claude week</span>
           <span class="usage-track"><span class="usage-fill"></span></span>
           <span class="usage-text">–</span>
         </span>
@@ -167,8 +173,15 @@
 
         <section class="page-block" id="usage-settings">
           <h2 class="block-title">Usage</h2>
-          <p class="setting-hint">Codex writes its limits to its own logs, so its numbers are exact. Claude Code does not write its plan limit to disk, so Nesa estimates Claude use from your transcripts. That estimate needs your limit.</p>
-          <div class="setting-row">
+          <p class="setting-hint">Codex writes its limits to its own logs, so its numbers are exact. Claude's own limits come from Claude Code's status line, which Nesa can connect with a small script. Until it is connected, Nesa estimates Claude use from your transcripts, and that estimate needs your limit.</p>
+          <div class="setting-row" id="claude-status-row">
+            <span class="setting-label">Claude's own limits
+              <small id="claude-status-text">Checking…</small></span>
+            <div class="setting-control">
+              <button class="btn btn-outline" id="claude-status-action" type="button" disabled>Connect…</button>
+            </div>
+          </div>
+          <div class="setting-row" id="claude-calibrate-row">
             <span class="setting-label">Claude limit
               <small id="claude-limit-status">Not set</small></span>
             <div class="setting-control">

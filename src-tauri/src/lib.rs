@@ -1,5 +1,6 @@
 mod activity;
 mod agents;
+mod claude_limits;
 mod commands;
 mod dictation;
 mod pty;
@@ -90,6 +91,9 @@ pub fn run() {
             commands::list_transcripts,
             commands::resume_session,
             usage::usage_snapshot,
+            claude_limits::claude_limits,
+            claude_limits::connect_claude_limits,
+            claude_limits::disconnect_claude_limits,
             dictation::dictation_start,
             dictation::dictation_stop,
             dictation::dictation_cancel,

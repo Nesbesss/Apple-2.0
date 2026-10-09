@@ -285,19 +285,24 @@ fn last_codex_report(path: &Path) -> Option<(u64, Value)> {
     None
 }
 
-/// One of Codex's windows. A report from before the window's reset is replaced by an unused window.
+/// One of Codex's windows, as its report describes it.
 fn codex_window(raw: &Value, observed: u64, now: u64) -> Option<Window> {
     let window_minutes = raw["window_minutes"].as_u64()?;
+    let resets_at_ms = raw["resets_at"].as_u64()? * 1000;
+    let used_percent = raw["used_percent"].as_f64()?;
+    Some(window_at(used_percent, window_minutes, resets_at_ms, observed, now))
+}
+
+/// A window as it stands at `now`. A report from before the window's reset is replaced by an unused
+/// window, with the reset moved forward to the window that is open now. The reporter writes nothing
+/// after a report, so nothing was used in the windows that followed it.
+pub fn window_at(used_percent: f64, window_minutes: u64, resets_at_ms: u64, observed_at_ms: u64, now: u64) -> Window {
     let length = window_minutes * 60_000;
-    let mut resets_at = raw["resets_at"].as_u64()? * 1000;
-    let reported = raw["used_percent"].as_f64()?;
-    if resets_at > now {
-        return Some(Window { used_percent: reported, window_minutes, resets_at_ms: resets_at, observed_at_ms: observed });
+    if resets_at_ms > now || length == 0 {
+        return Window { used_percent, window_minutes, resets_at_ms, observed_at_ms };
     }
-    // The window closed after Codex's last report, and Codex has written nothing since, so nothing was
-    // used in the windows that followed. Step the reset forward to the window that is open now.
-    resets_at += ((now - resets_at) / length + 1) * length;
-    Some(Window { used_percent: 0.0, window_minutes, resets_at_ms: resets_at, observed_at_ms: observed })
+    let resets_at_ms = resets_at_ms + ((now - resets_at_ms) / length + 1) * length;
+    Window { used_percent: 0.0, window_minutes, resets_at_ms, observed_at_ms }
 }
 
 fn millis(time: std::io::Result<SystemTime>) -> u64 {
