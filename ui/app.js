@@ -115,6 +115,7 @@
     surfaceChoices: $("#surface-choices"),
     statusColors: $("#status-colors"),
     alertsToggle: $("#alerts-toggle"),
+    pingChoices: $("#ping-choices"),
   };
 
   const groups = () => state.store.groups;
@@ -140,7 +141,7 @@
   const SETTINGS_KEY = "settings";
   const HEX = /^#[0-9a-f]{6}$/i;
   // claudeLimit is tokens per five hours, 0 when not set. claudeLimitAt is when it was set (Unix ms).
-  const DEFAULT_SETTINGS = { accent: "#7c9cff", surface: "default", done: "#4ac26b", fail: "#f06b6b", claude: "#d97757", hotkey: "alt", claudeLimit: 0, claudeLimitAt: 0 };
+  const DEFAULT_SETTINGS = { accent: "#7c9cff", surface: "default", done: "#4ac26b", fail: "#f06b6b", claude: "#d97757", hotkey: "alt", donePing: "Ping", claudeLimit: 0, claudeLimitAt: 0 };
   const SURFACES = {
     default: { label: "Default", canvas: "#121213", sidebar: "#171718", card: "#1c1c1e" },
     midnight: { label: "Midnight", canvas: "#0b0e18", sidebar: "#10141f", card: "#151a29" },
@@ -167,6 +168,9 @@
     "ctrl+alt": { label: "Control and Option", symbol: "⌃⌥", keys: ["ctrl", "alt"] },
   };
   const MODIFIER_FLAG = { alt: "altKey", ctrl: "ctrlKey", meta: "metaKey", shift: "shiftKey" };
+  // Sounds a finished agent can play, as macOS system sounds. The first one is the default.
+  // The backend keeps the same list and refuses any other name.
+  const DONE_PINGS = ["Ping", "Glass", "Hero", "Funk", "Frog", "Bottle", "Blow", "Morse", "Purr", "Submarine", "Sosumi"];
 
   let settings = { ...DEFAULT_SETTINGS };
 
@@ -182,6 +186,7 @@
       fail: pick("fail", isColor),
       claude: pick("claude", isColor),
       hotkey: pick("hotkey", (value) => Object.keys(HOTKEYS).includes(value)),
+      donePing: pick("donePing", (value) => DONE_PINGS.includes(value)),
       claudeLimit: pick("claudeLimit", (value) => Number.isFinite(value) && value >= 0),
       claudeLimitAt: pick("claudeLimitAt", (value) => Number.isFinite(value) && value >= 0),
     };
@@ -2009,6 +2014,9 @@
 
     el.statusColors.replaceChildren(...STATUS_COLORS.map(({ key, label }) => colorRow(key, label)));
     el.alertsToggle.setAttribute("aria-checked", String(alertsOn()));
+    el.pingChoices.replaceChildren(...DONE_PINGS.map((name) => h("span", { class: "ping-option" },
+      choice(name === settings.donePing, () => chooseDonePing(name), name),
+      h("button", { class: "ping-preview", type: "button", title: `Preview ${name}`, "aria-label": `Preview ${name}`, onclick: () => previewDonePing(name) }))));
     renderClaudeLimit();
     renderClaudeStatus();
   }
@@ -2043,6 +2051,19 @@
     applyColors();
     renderSettings();
   }
+
+  // Choosing a done ping saves it and plays it once, so the user hears the choice.
+  function chooseDonePing(name) {
+    setSetting("donePing", name);
+    syncDonePing();
+    previewDonePing(name);
+  }
+
+  // The arrow beside each ping plays it without choosing it.
+  const previewDonePing = (name) => invoke("preview_done_ping", { name }).catch(() => {});
+
+  // The backend plays the ping when an agent finishes, so it gets the saved choice on launch and after each change.
+  const syncDonePing = () => invoke("set_done_ping", { name: settings.donePing }).catch(() => {});
 
   // ------------------------------------------------------------------- usage
 
@@ -3015,6 +3036,7 @@
     bindUi();
     await bindBackendEvents();
     syncAlerts();
+    syncDonePing();
     startUsage();
     // Keeps "Working · 1m 04s" counting up. Only working cards change, so this is cheap.
     setInterval(() => state.workingSince.forEach((_, id) => updateCardStatus(id)), 1000);
