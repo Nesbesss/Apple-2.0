@@ -24,6 +24,11 @@
     restart: stroke('<path d="M2.75 8a5.25 5.25 0 1 0 1.6-3.75M2.75 2.75v2.5h2.5"/>'),
     more: '<svg viewBox="0 0 16 16" fill="currentColor"><circle cx="3.5" cy="8" r="1.1"/><circle cx="8" cy="8" r="1.1"/><circle cx="12.5" cy="8" r="1.1"/></svg>',
     terminal: stroke('<path d="m3.5 5 3 3-3 3M8.5 11.5h4"/>'),
+    pencil: stroke('<path d="M10.25 3.25 12.75 5.75 6 12.5H3.5v-2.5z"/>'),
+    folder: stroke('<path d="M2.5 4.5h3.25l1.5 1.5h6.25v6.5h-11z"/>'),
+    copy: stroke('<rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M3.5 10.5v-6a1 1 0 0 1 1-1h6"/>'),
+    stop: '<svg viewBox="0 0 16 16" fill="currentColor"><rect x="4" y="4" width="8" height="8" rx="1.5"/></svg>',
+    deck: stroke('<rect x="5" y="2.5" width="8.5" height="7" rx="1.5"/><path d="M3 6v6.5a1 1 0 0 0 1 1h7.5"/>'),
   };
 
   // ----------------------------------------------------------------- state
@@ -37,7 +42,9 @@
     renameDraft: "",
     renameFresh: false,
     status: {}, // id -> { running, exited, working }
+    workingSince: new Map(), // id -> Date.now() when the current "working" stretch began
     done: new Set(), // ids whose work finished while the user was not looking
+    dragId: null, // session id being dragged in the sidebar
     newKind: "claude",
   };
   const cards = new Map(); // id -> card entry (DOM, terminal, size bookkeeping)
@@ -49,12 +56,16 @@
     groupList: $("#group-list"),
     title: $("#group-title"),
     count: $("#group-count"),
+    summary: $("#summary"),
     grid: $("#grid"),
     empty: $("#empty"),
+    emptyTitle: $("#empty-title"),
     parking: $("#parking"),
     toasts: $("#toasts"),
+    recent: $("#recent"),
     sessionDialog: $("#new-session"),
     confirmDialog: $("#confirm"),
+    promptDialog: $("#prompt"),
   };
 
   const groups = () => state.store.groups;
@@ -116,6 +127,17 @@
 
   const kindLabel = (kind) => (kind === "codex" ? "Codex" : "Claude");
 
+  // 75s, 3m 05s, 2h 10m. Coarse on purpose: it is read at a glance.
+  function formatElapsed(ms) {
+    const total = Math.max(0, Math.floor(ms / 1000));
+    const minutes = Math.floor(total / 60);
+    const seconds = total % 60;
+    if (minutes < 1) return `${seconds}s`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 1) return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+    return `${hours}h ${String(minutes % 60).padStart(2, "0")}m`;
+  }
+
   // ---------------------------------------------------------------- status
 
   function stateOf(id) {
@@ -126,13 +148,24 @@
     return "idle";
   }
 
-  const STATE_WORD = { working: "Working", done: "Done", exited: "Exited", idle: "" };
+  const STATE_WORD = { working: "Working", done: "Done", exited: "Exited", idle: "Idle" };
+
+  // Records when a "working" stretch began, so the card can show how long it has run.
+  function trackWorking(id, working) {
+    if (!working) state.workingSince.delete(id);
+    else if (!state.workingSince.has(id)) state.workingSince.set(id, Date.now());
+  }
+
+  function isLive(id) {
+    return !!(state.status[id] && state.status[id].running);
+  }
 
   function setStatus(id, patch) {
     const prev = state.status[id] || { running: false, exited: false, working: false };
     state.status[id] = { ...prev, ...patch };
+    trackWorking(id, !!state.status[id].working);
     updateCardStatus(id);
-    updateGroupDots();
+    updateIndicators();
   }
 
   function isOnScreen(id) {
@@ -148,14 +181,24 @@
     for (const id of [...state.done]) {
       if (isOnScreen(id)) { state.done.delete(id); changed = true; }
     }
-    if (changed) { cards.forEach((_, id) => updateCardStatus(id)); updateGroupDots(); }
+    if (changed) { cards.forEach((_, id) => updateCardStatus(id)); updateIndicators(); }
   }
 
   function onActivity({ id, working }) {
     const wasWorking = !!(state.status[id] && state.status[id].working);
     if (working) state.done.delete(id);
-    else if (wasWorking && !(document.hasFocus() && isOnScreen(id))) state.done.add(id);
+    else if (wasWorking && !(document.hasFocus() && isOnScreen(id))) {
+      state.done.add(id);
+      announceDone(id);
+    }
     setStatus(id, { working, running: true });
+  }
+
+  // A system notification, shown only while the app is in the background.
+  function announceDone(id) {
+    const session = findSession(id);
+    if (!session || document.hasFocus() || !alertsOn()) return;
+    invoke("notify", { title: "Session Deck", body: `${session.name} finished` }).catch(() => {});
   }
 
   async function refreshStatus(ids) {
@@ -163,8 +206,9 @@
     const result = await attempt("session_status", { ids });
     if (!result.ok) return;
     Object.assign(state.status, result.value);
+    ids.forEach((id) => trackWorking(id, !!(state.status[id] && state.status[id].working)));
     ids.forEach(updateCardStatus);
-    updateGroupDots();
+    updateIndicators();
   }
 
   // ------------------------------------------------------------- terminals
@@ -199,9 +243,10 @@
 
   const decodeBase64 = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
 
-  // Returns false for keys xterm must not forward to the shell.
+  // Returns false for keys xterm must not forward to the shell. Every app shortcut listed in
+  // onKeyDown belongs here too, or the shell would receive it as well.
   function handleTermKey(id, e) {
-    if (e.metaKey && (e.key === "n" || /^[1-9]$/.test(e.key))) return false;
+    if (e.metaKey && (e.key === "n" || e.key === "[" || e.key === "]" || e.key === "j" || e.key === "Enter" || /^[1-9]$/.test(e.key))) return false;
     if (e.key === "Enter" && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
       if (e.type === "keydown") invoke("write_pty", { id, data: "\x1b\r" }).catch(() => {});
       return false; // ESC + CR makes Claude Code insert a newline
@@ -286,7 +331,7 @@
     const name = h("span", { class: "card-name" });
     const meta = h("span", { class: "card-meta" });
     const status = h("span", { class: "card-status" });
-    const restart = h("button", { class: "btn", title: "Restart session", onclick: () => restartSession(session.id) }, icon("restart"), "Restart");
+    const restart = h("button", { class: "btn", title: "Restart session", onclick: () => restartWithConfirm(session.id) }, icon("restart"), "Restart");
     const expand = h("button", { class: "icon-btn", onclick: () => toggleMaximize(session.id) });
     const more = h("button", { class: "icon-btn", title: "More", "aria-label": "More", onclick: (e) => openCardMenu(session.id, e.currentTarget) }, icon("more"));
     const head = h("header", { class: "card-head", ondblclick: (e) => { if (!e.target.closest("button")) toggleMaximize(session.id); } },
@@ -302,8 +347,13 @@
     card.meta.textContent = `${session.kind} · ${shortPath(session.cwd)}`;
     card.meta.title = session.cwd;
     card.expand.replaceChildren(icon(maximized ? "collapse" : "expand"));
-    card.expand.title = maximized ? "Restore" : "Expand";
+    card.expand.title = maximized ? "Restore (\u2318\u21A9)" : "Expand (\u2318\u21A9)";
     card.expand.setAttribute("aria-label", card.expand.title);
+  }
+
+  function statusText(id, st) {
+    const since = state.workingSince.get(id);
+    return st === "working" && since ? `${STATE_WORD[st]} · ${formatElapsed(Date.now() - since)}` : STATE_WORD[st];
   }
 
   function updateCardStatus(id) {
@@ -312,24 +362,42 @@
     const st = stateOf(id);
     card.dot.dataset.state = st;
     card.status.dataset.state = st;
-    card.status.textContent = STATE_WORD[st];
+    card.status.textContent = statusText(id, st);
+    card.root.classList.toggle("is-working", st === "working");
     card.restart.hidden = st !== "exited";
   }
 
-  function updateGroupDots() {
-    [...el.groupList.children].forEach((row, i) => {
-      const states = (groups()[i]?.sessions || []).map((s) => stateOf(s.id));
-      const dot = row.querySelector(".dot");
-      if (!dot) return;
+  // Repaints every status indicator outside the cards: sidebar dots and the toolbar summary.
+  function updateIndicators() {
+    el.groupList.querySelectorAll("[data-session-dot]").forEach((dot) => {
+      dot.dataset.state = stateOf(dot.dataset.sessionDot);
+    });
+    el.groupList.querySelectorAll(".group").forEach((row) => {
+      const group = groups()[Number(row.dataset.index)];
+      const states = (group ? group.sessions : []).map((s) => stateOf(s.id));
+      const dot = row.querySelector("[data-group-dot]");
       if (states.includes("done")) dot.dataset.state = "done";
       else if (states.includes("working")) dot.dataset.state = "working";
       else delete dot.dataset.state;
     });
+    updateSummary();
+  }
+
+  function updateSummary() {
+    const group = currentGroup();
+    const states = (group ? group.sessions : []).map((s) => stateOf(s.id));
+    const chip = (word) => {
+      const n = states.filter((st) => st === word).length;
+      return n ? h("span", { class: "stat" }, h("span", { class: "dot", "data-state": word }), `${n} ${word}`) : null;
+    };
+    // chip() returns null for an empty count; replaceChildren would print that as the text "null".
+    el.summary.replaceChildren(...[chip("working"), chip("done")].filter(Boolean));
   }
 
   function focusCard(id, { focusTerminal = true } = {}) {
     state.focusedId = id;
     cards.forEach((card) => card.root.classList.toggle("focused", card.id === id));
+    el.groupList.querySelectorAll(".session-row").forEach((row) => row.classList.toggle("focused", row.dataset.id === id));
     const card = cards.get(id);
     if (focusTerminal && card && card.opened) card.term.focus();
   }
@@ -357,23 +425,154 @@
     if (card) { card.live = true; fitCard(card, true); }
   }
 
+  // A running agent loses its in-flight work on restart, so ask first. A stopped one has nothing to lose.
+  async function restartWithConfirm(id) {
+    const session = findSession(id);
+    if (!session) return;
+    if (isLive(id)) {
+      const ok = await confirmDialog({
+        title: `Restart "${session.name}"?`,
+        text: "The running agent will be stopped and started again in the same folder.",
+        label: "Restart",
+        danger: false,
+      });
+      if (!ok) return;
+    }
+    restartSession(id);
+  }
+
   async function stopSession(id) {
     const result = await attempt("stop_session", { id });
     if (result.ok) setStatus(id, { running: false, exited: true, working: false });
   }
 
   async function removeSession(id) {
+    const session = findSession(id);
+    if (!session) return;
+    if (isLive(id)) {
+      const ok = await confirmDialog({
+        title: `Remove "${session.name}"?`,
+        text: "Its running agent will be stopped and removed from this group. The transcript stays on disk.",
+        label: "Remove",
+      });
+      if (!ok) return;
+    }
     const result = await attempt("remove_session", { id });
     if (result.ok) applyStore(result.value);
   }
 
+  async function renameSession(id) {
+    const session = findSession(id);
+    if (!session) return;
+    const name = await promptDialog({ title: "Rename session", value: session.name, label: "Save" });
+    if (!name || name === session.name) return;
+    const result = await attempt("rename_session", { id, name });
+    if (result.ok) applyStore(result.value);
+  }
+
+  async function moveSession(id, index) {
+    const session = findSession(id);
+    const target = groups()[index];
+    if (!session || !target || target.sessions.some((s) => s.id === id)) return;
+    const result = await attempt("move_session", { id, groupIndex: index });
+    if (!result.ok) return;
+    applyStore(result.value);
+    toast(`Moved "${session.name}" to ${target.name}`, "ok");
+  }
+
+  async function revealFolder(id) {
+    await attempt("reveal_session_folder", { id });
+  }
+
+  async function copyPath(id) {
+    const session = findSession(id);
+    if (!session) return;
+    const result = await attempt("copy_text", { text: session.cwd });
+    if (result.ok) toast("Path copied", "ok");
+  }
+
+  async function copySessionId(id) {
+    const session = findSession(id);
+    if (!session || !session.agent_id) return;
+    const result = await attempt("copy_text", { text: session.agent_id });
+    if (result.ok) toast("Session ID copied", "info");
+  }
+
+  // One list drives both the card's "more" menu and the sidebar's right-click menu.
+  function sessionMenuItems(id) {
+    const items = [
+      { label: "Rename…", onSelect: () => renameSession(id) },
+      { label: "Restart", onSelect: () => restartWithConfirm(id) },
+      { label: "Stop", disabled: !isLive(id), onSelect: () => stopSession(id) },
+    ];
+    if (groups().length > 1) {
+      const current = groups().findIndex((g) => g.sessions.some((s) => s.id === id));
+      items.push({ sep: true }, { heading: "Move to" });
+      groups().forEach((group, index) => items.push({
+        label: group.name,
+        disabled: index === current,
+        onSelect: () => moveSession(id, index),
+      }));
+    }
+    items.push(
+      { sep: true },
+      { label: "Reveal in Finder", onSelect: () => revealFolder(id) },
+      { label: "Copy path", onSelect: () => copyPath(id) },
+      { label: "Copy session ID", disabled: !findSession(id)?.agent_id, onSelect: () => copySessionId(id) },
+      { sep: true },
+      { label: "Remove from group", danger: true, onSelect: () => removeSession(id) },
+    );
+    return items;
+  }
+
   function openCardMenu(id, anchor) {
     const rect = anchor.getBoundingClientRect();
-    const exited = stateOf(id) === "exited";
-    showMenu(rect.right, rect.bottom + 4, [
-      { label: "Stop", disabled: exited, onSelect: () => stopSession(id) },
-      { label: "Remove from group", danger: true, onSelect: () => removeSession(id) },
-    ], { alignRight: true });
+    showMenu(rect.right, rect.bottom + 4, sessionMenuItems(id), { alignRight: true });
+  }
+
+  function openSessionMenu(id, x, y) {
+    showMenu(x, y, sessionMenuItems(id));
+  }
+
+  // Selects the session's group if needed, then brings its card to the front.
+  function focusSession(id) {
+    const index = groups().findIndex((g) => g.sessions.some((s) => s.id === id));
+    if (index < 0) return;
+    if (index !== state.selected) {
+      state.selected = index;
+      state.maximizedId = null;
+      state.renaming = null;
+      stored.set("selectedGroup", String(index));
+    } else if (state.maximizedId) {
+      state.maximizedId = id;
+    }
+    state.focusedId = id;
+    renderAll();
+    focusCard(id);
+  }
+
+  // Next or previous session in the current group, wrapping at the ends.
+  function cycleFocus(step) {
+    const group = currentGroup();
+    if (!group || !group.sessions.length) return;
+    const ids = group.sessions.map((s) => s.id);
+    const at = ids.indexOf(state.focusedId);
+    const from = at < 0 ? (step > 0 ? -1 : ids.length) : at;
+    focusSession(ids[(from + step + ids.length) % ids.length]);
+  }
+
+  // Cmd+J: the next finished session across all groups, switching group if needed.
+  function jumpToFinished() {
+    const all = allSessions();
+    const at = all.findIndex((s) => s.id === state.focusedId);
+    for (let step = 1; step <= all.length; step += 1) {
+      const session = all[(at + step + all.length) % all.length];
+      if (stateOf(session.id) === "done") {
+        focusSession(session.id);
+        return;
+      }
+    }
+    toast("No finished sessions right now", "info");
   }
 
   // ---------------------------------------------------------------- render
@@ -403,13 +602,23 @@
             ondblclick: (e) => e.stopPropagation(),
           })
         : h("span", { class: "group-name" }, group.name);
-      return h("div", {
+      const header = h("div", {
         class: `group-row${index === state.selected ? " selected" : ""}`,
         role: "button",
         onclick: () => selectGroup(index),
         ondblclick: () => startRename(index),
         oncontextmenu: (e) => { e.preventDefault(); openGroupMenu(e, index); },
-      }, name, h("span", { class: "dot" }));
+      }, name,
+        group.sessions.length ? h("span", { class: "group-count" }, String(group.sessions.length)) : null,
+        h("span", { class: "dot", "data-group-dot": "" }));
+      // The wrapper is the drop target, so the session list under the header takes drops too.
+      return h("div", {
+        class: "group",
+        "data-index": index,
+        ondragover: (e) => onGroupDragOver(e, index),
+        ondragleave: (e) => onGroupDragLeave(e),
+        ondrop: (e) => onGroupDrop(e, index),
+      }, header, group.sessions.length ? h("div", { class: "session-list" }, group.sessions.map(sessionRow)) : null);
     }));
 
     const field = el.groupList.querySelector(".group-rename");
@@ -418,7 +627,59 @@
       if (state.renameFresh) { field.select(); state.renameFresh = false; }
       else field.setSelectionRange(field.value.length, field.value.length);
     }
-    updateGroupDots();
+    updateIndicators();
+  }
+
+  function sessionRow(session) {
+    const id = session.id;
+    return h("div", {
+      class: `session-row${state.focusedId === id ? " focused" : ""}`,
+      role: "button",
+      title: session.cwd,
+      "data-id": id,
+      draggable: "true",
+      onclick: () => focusSession(id),
+      ondblclick: () => renameSession(id),
+      oncontextmenu: (e) => { e.preventDefault(); openSessionMenu(id, e.clientX, e.clientY); },
+      ondragstart: (e) => onSessionDragStart(e, id),
+      ondragend: () => endDrag(),
+    },
+      logo(session.kind),
+      h("span", { class: "session-name" }, session.name),
+      h("span", { class: "dot", "data-session-dot": id }));
+  }
+
+  // Drag a session row onto another group to move it there. The id lives in state because
+  // drag events cannot read custom data during dragover.
+  function onSessionDragStart(e, id) {
+    state.dragId = id;
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", id); // WebKit will not start a drag without some data
+    e.currentTarget.classList.add("dragging");
+  }
+
+  function endDrag() {
+    state.dragId = null;
+    el.groupList.querySelectorAll(".dragging, .drop-target").forEach((node) => node.classList.remove("dragging", "drop-target"));
+  }
+
+  function onGroupDragOver(e, index) {
+    const id = state.dragId;
+    if (!id || groups()[index].sessions.some((s) => s.id === id)) return; // not a drop onto its own group
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    e.currentTarget.classList.add("drop-target");
+  }
+
+  function onGroupDragLeave(e) {
+    if (!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.classList.remove("drop-target");
+  }
+
+  function onGroupDrop(e, index) {
+    e.preventDefault();
+    const id = state.dragId;
+    endDrag();
+    if (id) moveSession(id, index);
   }
 
   function renderToolbar() {
@@ -426,6 +687,7 @@
     const n = group ? group.sessions.length : 0;
     el.title.textContent = group ? group.name : "";
     el.count.textContent = n ? `${n} ${n === 1 ? "session" : "sessions"}` : "";
+    updateSummary();
   }
 
   function gridColumns(n) {
@@ -442,6 +704,7 @@
 
     el.empty.hidden = sessions.length > 0;
     el.grid.hidden = sessions.length === 0;
+    el.emptyTitle.textContent = group ? `No sessions in ${group.name}` : "No sessions";
 
     // Park cards that leave the screen; their terminals (and scrollback) live on.
     cards.forEach((card) => {
@@ -567,6 +830,7 @@
       if (ids.has(card.id)) return;
       disposeCard(card);
       state.done.delete(card.id);
+      state.workingSince.delete(card.id);
       delete state.status[card.id];
     });
     if (state.selected >= store.groups.length) state.selected = Math.max(0, store.groups.length - 1);
@@ -579,21 +843,27 @@
   // ------------------------------------------------------------ menu/dialog
 
   let closeActiveMenu = null;
+  let activeMenu = null;
 
   function closeMenu() {
     if (closeActiveMenu) closeActiveMenu();
   }
 
+  // Items are buttons, or { sep: true } for a divider, or { heading } for a non-clickable label.
   function showMenu(x, y, items, { alignRight = false } = {}) {
     closeMenu();
-    const menu = h("div", { class: "menu", role: "menu" }, items.map((item) =>
-      h("button", {
+    const menu = h("div", { class: "menu", role: "menu" }, items.map((item) => {
+      if (item.sep) return h("div", { class: "menu-sep", role: "separator" });
+      if (item.heading) return h("div", { class: "menu-heading" }, item.heading);
+      return h("button", {
         class: `menu-item${item.danger ? " danger" : ""}`,
         role: "menuitem",
         disabled: item.disabled,
         onclick: () => { closeMenu(); item.onSelect(); },
-      }, item.label)));
+      }, item.label);
+    }));
     document.body.append(menu);
+    activeMenu = menu;
 
     const { offsetWidth: w, offsetHeight: ht } = menu;
     const left = Math.max(8, Math.min(alignRight ? x - w : x, window.innerWidth - w - 8));
@@ -608,15 +878,27 @@
       document.removeEventListener("pointerdown", onPointerDown, true);
       window.removeEventListener("blur", closeMenu);
       menu.remove();
+      activeMenu = null;
       closeActiveMenu = null;
     };
   }
 
-  function confirmDialog({ title, text, label }) {
+  function moveMenuFocus(step) {
+    if (!activeMenu) return;
+    const items = [...activeMenu.querySelectorAll(".menu-item:not(:disabled)")];
+    if (!items.length) return;
+    const at = items.indexOf(document.activeElement);
+    const next = at < 0 ? (step > 0 ? 0 : items.length - 1) : (at + step + items.length) % items.length;
+    items[next].focus();
+  }
+
+  function confirmDialog({ title, text, label, danger = true }) {
     const dialog = el.confirmDialog;
     $("#confirm-title").textContent = title;
     $("#confirm-text").textContent = text;
-    $("#confirm-ok").textContent = label;
+    const ok = $("#confirm-ok");
+    ok.textContent = label;
+    ok.className = `btn ${danger ? "btn-danger" : "btn-primary"}`;
     return new Promise((resolve) => {
       let answer = false;
       const finish = () => { dialog.removeEventListener("close", finish); resolve(answer); };
@@ -627,6 +909,33 @@
     });
   }
 
+  // Resolves with the trimmed text, or null if cancelled. Blank text keeps the dialog open.
+  function promptDialog({ title, value, label }) {
+    const dialog = el.promptDialog;
+    const input = $("#prompt-input");
+    $("#prompt-title").textContent = title;
+    $("#prompt-ok").textContent = label;
+    input.value = value;
+    return new Promise((resolve) => {
+      let answer = null;
+      const finish = () => { dialog.removeEventListener("close", finish); resolve(answer); };
+      dialog.addEventListener("close", finish);
+      $("#prompt-form").onsubmit = (e) => {
+        e.preventDefault();
+        const text = input.value.trim();
+        if (!text) { input.focus(); return; }
+        answer = text;
+        dialog.close();
+      };
+      $("#prompt-cancel").onclick = () => dialog.close();
+      dialog.showModal();
+      input.focus();
+      input.select();
+    });
+  }
+
+  const anyDialogOpen = () => [el.sessionDialog, el.confirmDialog, el.promptDialog].some((d) => d.open);
+
   function setKind(kind) {
     state.newKind = kind;
     document.querySelectorAll(".segmented button").forEach((btn) =>
@@ -634,15 +943,34 @@
   }
 
   function openSessionDialog(kind = state.newKind) {
-    if (!currentGroup() || el.sessionDialog.open || el.confirmDialog.open) return;
+    if (!currentGroup() || anyDialogOpen()) return;
     closeMenu();
     setKind(kind);
     $("#session-name").value = "";
     $("#session-cwd").value = stored.get("lastCwd") || "";
     $("#session-error").hidden = true;
     $("#session-start").disabled = false;
+    renderRecent();
     el.sessionDialog.showModal();
     ($("#session-cwd").value ? $("#session-name") : $("#session-cwd")).focus();
+  }
+
+  // Folders the user has started sessions in, most recent first.
+  function renderRecent() {
+    const paths = [];
+    const candidates = [stored.get("lastCwd"), ...[...allSessions()].reverse().map((s) => s.cwd)];
+    for (const path of candidates) {
+      if (path && !paths.includes(path) && paths.length < 5) paths.push(path);
+    }
+    el.recent.replaceChildren(
+      ...(paths.length ? [h("span", { class: "recent-label" }, "Recent")] : []),
+      ...paths.map((path) => h("button", {
+        class: "chip",
+        type: "button",
+        title: path,
+        onclick: () => { $("#session-cwd").value = path; },
+      }, shortPath(path))));
+    el.recent.hidden = !paths.length;
   }
 
   async function browseFolder() {
@@ -680,7 +1008,7 @@
         name: $("#session-name").value.trim(),
         cwd,
       });
-      stored.set("lastCwd", cwd);
+      stored.set("lastCwd", session.cwd);
       state.status[session.id] = { running: true, exited: false, working: false };
       state.focusedId = session.id;
       state.maximizedId = null;
@@ -693,24 +1021,276 @@
     }
   }
 
+  // ------------------------------------------------------------- dictation
+
+  // Hold Option+Command to talk; release to type the words into the focused session.
+  // The chord only shows the HUD after a short hold, so shortcuts like Option+Command+I stay silent.
+  const DICTATION_REVEAL_DELAY = 150; // ms
+  const CHIMES = {
+    start: [659.25, 987.77], // E5, B5: rising
+    stop: [987.77, 659.25], // falling
+    done: [783.99, 1174.66], // G5, D6
+  };
+  const dictation = {
+    state: "idle", // "idle" | "held" (recording) | "ignoring" (a shortcut was typed during the chord)
+    shown: false, // the HUD is up
+    timer: 0,
+    frame: 0,
+    level: 0, // smoothed mic level, drives the bars
+    target: 0, // last level from the helper
+    audio: null,
+  };
+  const hud = {
+    root: $("#dictation"),
+    text: $("#dictation-text"),
+    bars: [...document.querySelectorAll(".dictation-bars i")],
+    hideTimer: 0,
+  };
+
+  const isModifierKey = (e) => e.key === "Meta" || e.key === "Alt";
+  const chordDown = (e) => e.metaKey && e.altKey && !e.ctrlKey && !e.shiftKey;
+  const tail = (text) => (text.length > 72 ? `…${text.slice(-72)}` : text);
+
+  // Two sine tones with a soft overtone make a glassy, bell-like sound. Synthesised, so no assets.
+  function playChime(name) {
+    try {
+      if (!dictation.audio) dictation.audio = new AudioContext();
+      const ctx = dictation.audio;
+      if (ctx.state === "suspended") ctx.resume();
+      const t0 = ctx.currentTime + 0.01;
+      CHIMES[name].forEach((freq, i) => {
+        const start = t0 + i * 0.09;
+        const end = start + 0.5;
+        const out = ctx.createGain();
+        out.gain.setValueAtTime(0.0001, start);
+        out.gain.exponentialRampToValueAtTime(0.09, start + 0.015);
+        out.gain.exponentialRampToValueAtTime(0.0001, end);
+        out.connect(ctx.destination);
+        [[1, 1], [2.01, 0.18]].forEach(([ratio, level]) => {
+          const osc = ctx.createOscillator();
+          const partial = ctx.createGain();
+          partial.gain.value = level;
+          osc.frequency.value = freq * ratio;
+          osc.connect(partial).connect(out);
+          osc.start(start);
+          osc.stop(end);
+        });
+      });
+    } catch {
+      // No audio output: the HUD still shows the state.
+    }
+  }
+
+  function setHud(mode, text) {
+    hud.root.dataset.mode = mode;
+    hud.root.classList.add("is-visible");
+    if (text !== undefined) hud.text.textContent = text;
+  }
+
+  function hideHud(delay = 0) {
+    clearTimeout(hud.hideTimer);
+    hud.hideTimer = setTimeout(() => {
+      if (dictation.state !== "idle") return; // a new hold has started
+      dictation.shown = false;
+      dictation.target = 0;
+      hud.root.dataset.mode = "idle"; // back to the dim dot, without the last mode's colour
+      hud.root.classList.remove("is-visible");
+    }, delay);
+  }
+
+  // The bars follow the real microphone level, with a small per-bar wobble so they feel alive.
+  function animateHud() {
+    dictation.frame = 0;
+    if (!dictation.shown) return;
+    dictation.target *= 0.92; // decays between level events
+    dictation.level += (dictation.target - dictation.level) * 0.3;
+    const now = performance.now() / 1000;
+    hud.bars.forEach((bar, i) => {
+      const weight = [0.55, 0.85, 1, 0.8, 0.6][i];
+      const wobble = 0.75 + 0.25 * Math.sin(now * 9 + i * 1.7);
+      const height = Math.max(0.14, Math.min(1, dictation.level * weight * wobble * 1.6));
+      bar.style.transform = `scaleY(${height.toFixed(3)})`;
+    });
+    dictation.frame = requestAnimationFrame(animateHud);
+  }
+
+  function beginDictation() {
+    // Ignore the chord while typing in a text field that is not a terminal (rename, dialogs).
+    const active = document.activeElement;
+    if (active && active.matches("input, textarea") && !active.classList.contains("xterm-helper-textarea")) return;
+    dictation.state = "held";
+    dictation.timer = setTimeout(revealDictation, DICTATION_REVEAL_DELAY);
+    attempt("dictation_start").then((result) => {
+      if (!result.ok) {
+        clearTimeout(dictation.timer);
+        dictation.state = "idle";
+        hideHud();
+      }
+    });
+  }
+
+  function revealDictation() {
+    if (dictation.state !== "held") return;
+    dictation.shown = true;
+    setHud("listening", "Listening…");
+    playChime("start");
+    if (!dictation.frame) animateHud();
+  }
+
+  function releaseDictation() {
+    clearTimeout(dictation.timer);
+    dictation.state = "idle";
+    dictation.target = 0;
+    if (dictation.shown) {
+      setHud("processing", hud.text.textContent);
+      playChime("stop");
+    }
+    attempt("dictation_stop");
+  }
+
+  function cancelDictation(nextState = "idle") {
+    if (dictation.state === "idle") return;
+    const wasRecording = dictation.state === "held";
+    clearTimeout(dictation.timer);
+    dictation.state = nextState;
+    dictation.shown = false;
+    hideHud();
+    if (wasRecording) attempt("dictation_cancel");
+  }
+
+  function focusedLiveCard() {
+    const card = state.focusedId ? cards.get(state.focusedId) : null;
+    return card && card.opened && card.live ? card : null;
+  }
+
+  function finishDictation(text) {
+    const spoken = text.trim();
+    if (!spoken) {
+      hideHud();
+      return;
+    }
+    const card = focusedLiveCard();
+    if (card) {
+      // paste() honours bracketed paste, so newlines do not submit the prompt early.
+      card.term.paste(spoken);
+      setHud("done", tail(spoken));
+      playChime("done");
+      hideHud(1200);
+    } else {
+      // Nothing to type into: leave the words on screen so they are not lost.
+      setHud("error", `${tail(spoken)}  ·  click a running session first`);
+      hideHud(4000);
+    }
+  }
+
+  function onDictationEvent(event) {
+    switch (event.event) {
+      case "level":
+        dictation.target = Math.min(1, event.value);
+        break;
+      case "partial":
+        if (dictation.shown) hud.text.textContent = tail(event.text);
+        break;
+      case "final":
+        finishDictation(event.text || "");
+        break;
+      case "state":
+        if (event.state === "downloading" && dictation.shown) setHud("listening", "Downloading the speech model…");
+        break;
+      case "error":
+        toast(event.message);
+        dictation.target = 0;
+        if (dictation.shown) setHud("error", event.message);
+        if (dictation.state === "idle") hideHud(2500);
+        break;
+      case "exited":
+        toast("Dictation stopped. It restarts on the next hold.");
+        if (dictation.state === "idle") hideHud();
+        break;
+    }
+  }
+
+  // Keys pressed during the chord are shortcuts (Option+Command+I, Option+Command+Esc, ...).
+  // Dictation yields to them, and the keys do not reach the terminal.
+  function onDictationKeyDown(e) {
+    if (dictation.state === "idle") {
+      if (!chordDown(e) || el.sessionDialog.open || el.confirmDialog.open) return;
+      beginDictation();
+      return;
+    }
+    if (isModifierKey(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (dictation.state === "held") cancelDictation("ignoring");
+  }
+
+  function onDictationKeyUp(e) {
+    if (dictation.state === "idle" || (e.metaKey && e.altKey)) return;
+    if (dictation.state === "held") releaseDictation();
+    dictation.state = "idle";
+  }
+
+  // ------------------------------------------------------- alerts and quitting
+
+  const alertsOn = () => stored.get("alerts") !== "off";
+
+  function syncAlerts() {
+    const on = alertsOn();
+    const button = $("#alerts-toggle");
+    button.textContent = `Done alerts: ${on ? "On" : "Off"}`;
+    button.setAttribute("aria-pressed", String(on));
+    invoke("set_alerts", { enabled: on }).catch(() => {});
+  }
+
+  function toggleAlerts() {
+    stored.set("alerts", alertsOn() ? "off" : "on");
+    syncAlerts();
+  }
+
+  // Quitting stops every agent, so the user confirms when any of them is still working.
+  async function confirmQuit(working) {
+    if (el.confirmDialog.open) return;
+    const ok = await confirmDialog({
+      title: "Quit Session Deck?",
+      text: `${working === 1 ? "A session is" : `${working} sessions are`} still working. Quitting stops ${working === 1 ? "it" : "them"} mid-task. Sessions reopen with their transcripts the next time you open them.`,
+      label: "Quit",
+    });
+    if (ok) invoke("quit_app").catch(() => {});
+  }
+
   // ---------------------------------------------------------------- events
 
+  // Shortcuts that reach the terminal are also listed in handleTermKey, so the shell never sees them.
   function onKeyDown(e) {
+    if (activeMenu && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      e.preventDefault();
+      moveMenuFocus(e.key === "ArrowDown" ? 1 : -1);
+      return;
+    }
     const typing = document.activeElement && document.activeElement.classList.contains("xterm-helper-textarea");
     if (e.key === "Escape" && (closeActiveMenu || !typing)) {
-      if (closeActiveMenu) e.preventDefault();
-      closeMenu();
+      if (closeActiveMenu) { e.preventDefault(); closeMenu(); return; }
+      if (!anyDialogOpen() && state.maximizedId) toggleMaximize(state.maximizedId);
       return;
     }
     if (!e.metaKey || e.ctrlKey || e.altKey) return;
     closeMenu();
-    if (el.sessionDialog.open || el.confirmDialog.open) return;
+    if (anyDialogOpen()) return;
     if (e.key === "n") {
       e.preventDefault();
       openSessionDialog();
     } else if (/^[1-9]$/.test(e.key)) {
       e.preventDefault();
       selectGroup(Number(e.key) - 1);
+    } else if (e.key === "]" || e.key === "[") {
+      e.preventDefault();
+      cycleFocus(e.key === "]" ? 1 : -1);
+    } else if (e.key === "j") {
+      e.preventDefault();
+      jumpToFinished();
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      if (state.focusedId) toggleMaximize(state.focusedId);
     }
   }
 
@@ -721,15 +1301,23 @@
     $("#new-group").addEventListener("click", createGroup);
     $("#new-claude").addEventListener("click", () => openSessionDialog("claude"));
     $("#new-codex").addEventListener("click", () => openSessionDialog("codex"));
+    $("#empty-claude").addEventListener("click", () => openSessionDialog("claude"));
+    $("#empty-codex").addEventListener("click", () => openSessionDialog("codex"));
 
     document.querySelectorAll(".segmented button").forEach((btn) =>
       btn.addEventListener("click", () => setKind(btn.dataset.kind)));
     $("#browse").addEventListener("click", browseFolder);
+    $("#alerts-toggle").addEventListener("click", toggleAlerts);
     $("#session-cancel").addEventListener("click", () => el.sessionDialog.close());
     $("#new-session-form").addEventListener("submit", submitSession);
-    [el.sessionDialog, el.confirmDialog].forEach((dialog) =>
+    [el.sessionDialog, el.confirmDialog, el.promptDialog].forEach((dialog) =>
       dialog.addEventListener("mousedown", (e) => { if (e.target === dialog) dialog.close(); }));
 
+    window.addEventListener("keydown", onDictationKeyDown, true);
+    window.addEventListener("keyup", onDictationKeyUp, true);
+    // Losing focus means the key release will never arrive, so end the hold now.
+    window.addEventListener("blur", () => cancelDictation());
+    document.addEventListener("visibilitychange", () => { if (document.hidden) cancelDictation(); });
     window.addEventListener("keydown", onKeyDown, true);
     window.addEventListener("focus", clearSeenDone);
     window.addEventListener("contextmenu", (e) => { if (!e.target.closest(".group-row, .input, .group-rename, .xterm")) e.preventDefault(); });
@@ -748,7 +1336,9 @@
         setStatus(payload.id, { running: false, exited: true, working: false });
       }),
       listen("activity", ({ payload }) => onActivity(payload)),
+      listen("dictation", ({ payload }) => onDictationEvent(payload)),
       listen("store-changed", ({ payload }) => applyStore(payload)),
+      listen("quit-requested", ({ payload }) => confirmQuit(payload)),
     ]);
   }
 
@@ -757,6 +1347,9 @@
   async function start() {
     bindUi();
     await bindBackendEvents();
+    syncAlerts();
+    // Keeps "Working · 1m 04s" counting up. Only working cards change, so this is cheap.
+    setInterval(() => state.workingSince.forEach((_, id) => updateCardStatus(id)), 1000);
 
     let loaded = await attempt("load_store");
     if (!loaded.ok) return;

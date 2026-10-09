@@ -12,6 +12,7 @@
       {
         "label": "main",
         "title": "Session Deck",
+        "dragDropEnabled": false,
         "width": 1400,
         "height": 900,
         "minWidth": 900,
@@ -28,6 +29,7 @@
   "bundle": {
     "active": true,
     "targets": ["app"],
+    "externalBin": ["binaries/speech-helper"],
     "category": "DeveloperTool",
     "shortDescription": "Organize Claude and Codex sessions",
     "macOS": {
