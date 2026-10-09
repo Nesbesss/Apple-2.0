@@ -1452,6 +1452,73 @@
     $("#colors-reset").addEventListener("click", resetColors);
   }
 
+  // ------------------------------------------------------------ files and images
+
+  const DROP_LIMIT = 25 * 1024 * 1024; // bytes; larger files are refused rather than sent over IPC
+
+  // A dropped file is copied to a cache folder and its path is typed into the session under the
+  // pointer, or the focused one. Claude and Codex read image paths as attachments.
+  function cardAtPoint(x, y) {
+    const node = document.elementFromPoint(x, y);
+    const entry = node && node.closest(".card[data-id]") ? cards.get(node.closest(".card[data-id]").dataset.id) : null;
+    return entry && entry.opened && entry.live ? entry : focusedLiveCard();
+  }
+
+  const hasFiles = (e) => Boolean(e.dataTransfer) && [...e.dataTransfer.types].includes("Files");
+
+  function readAsBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result).split(",")[1] || "");
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function attachFiles(files, card) {
+    const paths = [];
+    for (const file of files) {
+      if (file.size > DROP_LIMIT) {
+        toast(`${file.name} is larger than 25 MB`);
+        continue;
+      }
+      const result = await attempt("save_dropped_file", { name: file.name, dataBase64: await readAsBase64(file) });
+      if (result.ok) paths.push(result.value);
+    }
+    if (paths.length) card.term.paste(`${paths.join(" ")} `);
+  }
+
+  // Without this the webview opens the dropped file in place of the app.
+  function onWindowDragOver(e) {
+    if (hasFiles(e)) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+    }
+  }
+
+  function onWindowDrop(e) {
+    if (!hasFiles(e)) return; // the app's own drags (reordering sessions) are handled elsewhere
+    e.preventDefault();
+    const card = cardAtPoint(e.clientX, e.clientY);
+    if (!card) {
+      toast("Open a running session first, then drop the file on it");
+      return;
+    }
+    attachFiles([...e.dataTransfer.files], card);
+  }
+
+  // Cmd+V with an image on the clipboard has no text to paste. Ctrl+V goes to the agent instead, and
+  // Claude and Codex read the image from the clipboard themselves.
+  function onWindowPaste(e) {
+    const data = e.clipboardData;
+    const card = focusedLiveCard();
+    if (!data || !card || data.getData("text/plain")) return;
+    if (![...data.items].some((item) => item.type.startsWith("image/"))) return;
+    e.preventDefault();
+    e.stopPropagation();
+    invoke("write_pty", { id: card.id, data: "\x16" }).catch(() => {});
+  }
+
   // ------------------------------------------------------------- dictation
 
   // Hold the voice-mode keys to talk; release to type the words into the focused session.
@@ -1811,6 +1878,9 @@
 
     window.addEventListener("keydown", onDictationKeyDown, true);
     window.addEventListener("keyup", onDictationKeyUp, true);
+    window.addEventListener("dragover", onWindowDragOver, true);
+    window.addEventListener("drop", onWindowDrop, true);
+    window.addEventListener("paste", onWindowPaste, true);
     // Losing focus means the key release will never arrive, so end the hold now.
     window.addEventListener("blur", () => cancelDictation());
     document.addEventListener("visibilitychange", () => { if (document.hidden) cancelDictation(); });

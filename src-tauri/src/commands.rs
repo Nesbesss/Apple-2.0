@@ -418,3 +418,24 @@ pub fn session_status(ids: Vec<String>, state: State<'_, AppState>) -> HashMap<S
 pub fn play_sound(name: String) -> CmdResult<()> {
     sound::play_ui_sound(&name)
 }
+
+/// Writes a file dropped on the window into a cache folder and returns its path. The agent reads the
+/// file from there, so a dropped image becomes an attachment, the same as a pasted one.
+#[tauri::command]
+pub fn save_dropped_file(name: String, data_base64: String) -> CmdResult<String> {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    let bytes = STANDARD.decode(data_base64).map_err(|e| format!("Could not read the file: {e}"))?;
+    let cleaned: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' })
+        .collect();
+    let cleaned = if cleaned.is_empty() { "file".to_string() } else { cleaned };
+    let dir = dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("SessionDeck")
+        .join("drops");
+    fs::create_dir_all(&dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
+    let path = dir.join(format!("{}-{cleaned}", Uuid::new_v4()));
+    fs::write(&path, bytes).map_err(|e| format!("Could not save {cleaned}: {e}"))?;
+    Ok(path.display().to_string())
+}

@@ -77,6 +77,7 @@ pub fn run() {
             commands::notify,
             commands::set_alerts,
             commands::play_sound,
+            commands::save_dropped_file,
             commands::quit_app,
             commands::ensure_session,
             commands::restart_session,
