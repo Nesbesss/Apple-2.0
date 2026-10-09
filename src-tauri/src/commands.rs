@@ -1,6 +1,6 @@
 use crate::{
-    activity, pty, sound, transcripts,
-    store::{default_name, Group, Kind, Session, Store},
+    activity, pty, sound, transcripts, web,
+    store::{batch_names, default_name, Group, Kind, Session, Store},
     AppState,
 };
 use serde::Serialize;
@@ -114,49 +114,91 @@ pub fn delete_group(index: usize, state: State<'_, AppState>) -> CmdResult<Store
     Ok(snapshot)
 }
 
+/// Most sessions one request opens. A larger count is refused instead of starting a wall of processes.
+pub const MAX_BATCH: usize = 8;
+
+/// Starts `count` sessions of one kind in group `group_index`, named "name", "name 2", and so on. Each
+/// session is saved as it starts, so when a later one fails the earlier ones stay, and the error says so.
 #[tauri::command]
-pub fn create_session(
+pub fn create_sessions(
     group_index: usize,
     kind: Kind,
+    count: usize,
     name: String,
     cwd: String,
+    url: Option<String>,
     app: AppHandle,
     state: State<'_, AppState>,
-) -> CmdResult<Session> {
-    let path = expand_home(cwd.trim());
-    let cwd = fs::canonicalize(&path).map_err(|_| format!("No such folder: {}", path.display()))?;
-    if !cwd.is_dir() {
-        return Err(format!("Not a folder: {}", cwd.display()));
+) -> CmdResult<Vec<Session>> {
+    if !(1..=MAX_BATCH).contains(&count) {
+        return Err(format!("Open between 1 and {MAX_BATCH} sessions at a time"));
     }
+    state.store.lock().unwrap().groups.get(group_index).ok_or("That group no longer exists")?;
 
-    let id = Uuid::new_v4().to_string();
-    let name = {
-        let store = state.store.lock().unwrap();
-        let group = store.groups.get(group_index).ok_or("That group no longer exists")?;
-        match name.trim() {
-            "" => {
-                // The folder name says far more than "Claude 3", and it is what people look for.
-                let folder = cwd
-                    .file_name()
-                    .map(|f| f.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| kind.label().to_string());
-                let taken: Vec<&str> = group.sessions.iter().map(|s| s.name.as_str()).collect();
-                default_name(&folder, &taken)
+    let typed = name.trim().to_string();
+    let (cwd, base, url) = match kind {
+        Kind::Browser => {
+            // A browser has no folder. Its address is optional, and without a typed name the host names it.
+            let url = match url.as_deref().map(str::trim).filter(|u| !u.is_empty()) {
+                Some(text) => Some(web::normalize_url(text)?),
+                None => None,
+            };
+            let base = if typed.is_empty() {
+                url.as_ref().and_then(|u| u.host_str()).unwrap_or("Browser").to_string()
+            } else {
+                typed.clone()
+            };
+            let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+            (home, base, url.map(|u| u.to_string()))
+        }
+        _ => {
+            let path = expand_home(cwd.trim());
+            let cwd = fs::canonicalize(&path).map_err(|_| format!("No such folder: {}", path.display()))?;
+            if !cwd.is_dir() {
+                return Err(format!("Not a folder: {}", cwd.display()));
             }
-            typed => typed.to_string(),
+            // The folder name says far more than "Claude 3", and it is what people look for.
+            let folder = cwd
+                .file_name()
+                .map(|f| f.to_string_lossy().into_owned())
+                .unwrap_or_else(|| kind.label().to_string());
+            let base = if typed.is_empty() { folder } else { typed.clone() };
+            (cwd, base, None)
         }
     };
-    // Claude takes a caller-chosen id, so the same id is used to launch and to resume.
-    let agent_id = (kind == Kind::Claude).then(|| id.clone());
-    start_session(&app, &state, group_index, Session { id, kind, name, cwd, agent_id })
+
+    // One session keeps a typed name exactly. Several are numbered from the base, around the names in use.
+    let names = if count == 1 && !typed.is_empty() {
+        vec![typed.clone()]
+    } else {
+        let store = state.store.lock().unwrap();
+        let group = store.groups.get(group_index).ok_or("That group no longer exists")?;
+        let taken: Vec<&str> = group.sessions.iter().map(|s| s.name.as_str()).collect();
+        batch_names(&base, &taken, count)
+    };
+
+    let mut created = Vec::with_capacity(count);
+    for (started, name) in names.into_iter().enumerate() {
+        let id = Uuid::new_v4().to_string();
+        // Claude takes a caller-chosen id, so the same id is used to launch and to resume.
+        let agent_id = (kind == Kind::Claude).then(|| id.clone());
+        let session = Session { id, kind, name, cwd: cwd.clone(), agent_id, url: url.clone() };
+        start_session(&app, &state, group_index, session.clone()).map_err(|e| {
+            if started == 0 { e } else { format!("Started {started} of {count}. {e}") }
+        })?;
+        created.push(session);
+    }
+    Ok(created)
 }
 
-/// Starts a session's agent and files it under group `group_index`. New and resumed sessions both go through here.
+/// Starts a session's agent and files it under group `group_index`. New and resumed sessions both go through
+/// here. A browser has no process, so only its place in the store is recorded.
 fn start_session(app: &AppHandle, state: &AppState, group_index: usize, session: Session) -> CmdResult<Session> {
-    let mut ptys = state.ptys.lock().unwrap();
-    let pty = pty::spawn(app, &session)?;
-    ptys.insert(session.id.clone(), pty);
-    drop(ptys);
+    if session.kind.has_pty() {
+        let mut ptys = state.ptys.lock().unwrap();
+        let pty = pty::spawn(app, &session)?;
+        ptys.insert(session.id.clone(), pty);
+    }
 
     let mut store = state.store.lock().unwrap();
     let group = store.groups.get_mut(group_index).ok_or("That group no longer exists")?;
@@ -242,7 +284,7 @@ pub fn resume_session(
     let base = if transcript.title.is_empty() { folder } else { transcript.title };
     let taken: Vec<&str> = taken.iter().map(String::as_str).collect();
     let name = default_name(&base, &taken);
-    let session = Session { id: Uuid::new_v4().to_string(), kind, name, cwd: transcript.cwd, agent_id: Some(agent_id) };
+    let session = Session { id: Uuid::new_v4().to_string(), kind, name, cwd: transcript.cwd, agent_id: Some(agent_id), url: None };
     start_session(&app, &state, group_index, session)
 }
 
@@ -336,6 +378,9 @@ pub fn quit_app(app: AppHandle) {
 #[tauri::command]
 pub fn ensure_session(id: String, app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     let session = find_session(&state, &id)?;
+    if !session.kind.has_pty() {
+        return Ok(());
+    }
     let mut ptys = state.ptys.lock().unwrap();
     if ptys.contains_key(&id) {
         return Ok(());
@@ -348,6 +393,9 @@ pub fn ensure_session(id: String, app: AppHandle, state: State<'_, AppState>) ->
 #[tauri::command]
 pub fn restart_session(id: String, app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     let session = find_session(&state, &id)?;
+    if !session.kind.has_pty() {
+        return Ok(());
+    }
     let mut ptys = state.ptys.lock().unwrap();
     if let Some(mut old) = ptys.remove(&id) {
         old.stop();

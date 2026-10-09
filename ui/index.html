@@ -34,6 +34,7 @@
       <span class="spacer" data-tauri-drag-region></span>
       <button class="btn" id="new-claude"><span class="logo logo-claude" data-logo="claude"></span>New Claude</button>
       <button class="btn" id="new-codex"><span class="logo logo-openai" data-logo="openai"></span>New Codex</button>
+      <button class="btn" id="new-terminal"><span class="kind-mark" data-icon="terminal"></span>Terminal</button>
     </header>
 
     <section class="stage" id="stage">
@@ -67,6 +68,8 @@
           <div class="page-actions">
             <button class="btn" id="home-claude"><span class="logo logo-claude" data-logo="claude"></span>New Claude</button>
             <button class="btn" id="home-codex"><span class="logo logo-openai" data-logo="openai"></span>New Codex</button>
+            <button class="btn" id="home-terminal"><span class="kind-mark" data-icon="terminal"></span>Terminal</button>
+            <button class="btn" id="home-browser"><span class="kind-mark" data-icon="globe"></span>Browser</button>
           </div>
         </header>
 
@@ -177,17 +180,29 @@
     <form id="new-session-form" autocomplete="off" spellcheck="false">
       <h2 class="dialog-title">New session</h2>
 
-      <div class="segmented" role="radiogroup" aria-label="Agent">
+      <div class="segmented kinds" role="radiogroup" aria-label="Kind">
         <button type="button" role="radio" data-kind="claude"><span class="logo logo-claude" data-logo="claude"></span>Claude</button>
         <button type="button" role="radio" data-kind="codex"><span class="logo logo-openai" data-logo="openai"></span>Codex</button>
+        <button type="button" role="radio" data-kind="terminal"><span class="kind-mark" data-icon="terminal"></span>Terminal</button>
+        <button type="button" role="radio" data-kind="browser"><span class="kind-mark" data-icon="globe"></span>Browser</button>
       </div>
 
-      <label class="field">
-        <span class="field-label">Name <em>optional</em></span>
-        <input class="input" id="session-name" type="text" maxlength="80" placeholder="Defaults to the agent name">
-      </label>
+      <div class="field-pair">
+        <label class="field grow">
+          <span class="field-label">Name <em>optional</em></span>
+          <input class="input" id="session-name" type="text" maxlength="80" placeholder="Defaults to the agent name">
+        </label>
+        <div class="field">
+          <span class="field-label" id="count-label">How many</span>
+          <div class="stepper" role="group" aria-labelledby="count-label">
+            <button type="button" class="btn btn-outline" id="count-less" aria-label="One fewer">&minus;</button>
+            <output class="stepper-value" id="session-count" aria-live="polite">1</output>
+            <button type="button" class="btn btn-outline" id="count-more" aria-label="One more">+</button>
+          </div>
+        </div>
+      </div>
 
-      <div class="field">
+      <div class="field" id="session-folder-field">
         <label class="field-label" for="session-cwd">Folder</label>
         <div class="field-row">
           <input class="input mono" id="session-cwd" type="text" placeholder="/path/to/project">
@@ -195,6 +210,11 @@
         </div>
         <div class="recent" id="recent" hidden></div>
       </div>
+
+      <label class="field" id="session-url-field" hidden>
+        <span class="field-label">Address <em>optional</em></span>
+        <input class="input mono" id="session-url" type="text" placeholder="github.com, or a search" spellcheck="false">
+      </label>
 
       <p class="form-error" id="session-error" role="alert" hidden></p>
 

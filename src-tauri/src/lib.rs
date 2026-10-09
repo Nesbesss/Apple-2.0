@@ -6,6 +6,7 @@ mod pty;
 mod sound;
 mod store;
 mod transcripts;
+mod web;
 
 use std::{
     collections::HashMap,
@@ -68,7 +69,7 @@ pub fn run() {
             commands::create_group,
             commands::rename_group,
             commands::delete_group,
-            commands::create_session,
+            commands::create_sessions,
             commands::remove_session,
             commands::rename_session,
             commands::move_session,

@@ -80,6 +80,8 @@ pub fn is_working(session: &Session, pty: &Pty, busy: &HashSet<String>) -> bool 
     match session.kind {
         Kind::Claude => session.agent_id.as_ref().is_some_and(|id| busy.contains(id)),
         Kind::Codex => pty.busy_text_within(CODEX_BUSY_WINDOW),
+        // A shell prints whatever it is asked to, so its output says nothing about being busy.
+        Kind::Terminal | Kind::Browser => false,
     }
 }
 

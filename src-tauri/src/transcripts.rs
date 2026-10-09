@@ -152,6 +152,8 @@ fn read(candidate: Candidate) -> Option<Transcript> {
             let head = parse_codex(text)?;
             (head.cwd?, head.title)
         }
+        // Only agents leave transcripts behind.
+        Kind::Terminal | Kind::Browser => return None,
     };
     cwd.is_dir().then(|| Transcript {
         kind: candidate.kind,

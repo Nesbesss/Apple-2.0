@@ -814,6 +814,26 @@ kbd {
   .switch, .switch::after { transition: none; }
 }
 
+/* Kinds: glyphs for terminal and browser sessions, the four-way kind control, and the How many stepper */
+
+.kind-mark { display: inline-flex; flex: none; width: 14px; height: 14px; color: var(--muted); }
+.kind-mark svg { width: 100%; height: 100%; display: block; }
+.session-row .kind-mark { width: 12px; height: 12px; }
+.segmented.kinds { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.segmented.kinds button { padding: 0 6px; font-size: 12px; }
+
+.field-pair { display: flex; align-items: flex-end; gap: 12px; }
+.field.grow { flex: 1; min-width: 0; }
+.stepper { display: flex; align-items: center; gap: 8px; height: 30px; }
+.stepper .btn { width: 30px; justify-content: center; padding: 0; font-size: 15px; }
+.stepper .btn:disabled { opacity: 0.35; }
+.stepper-value {
+  min-width: 26px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
 /* Voice pill. Idle, it is a small dot in the middle of the toolbar. Holding Option opens it into a bar
    with the state, the destination session, the newest words and a level meter. It sits over the empty
    middle of the toolbar and ignores the pointer, so it never covers a terminal or blocks a window drag.

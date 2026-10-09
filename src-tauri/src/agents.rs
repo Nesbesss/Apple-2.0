@@ -16,18 +16,26 @@ pub struct Launch {
 /// Runs the agent through the user's login shell, so PATH and shell-profile env match a normal
 /// terminal. A GUI app does not inherit those.
 pub fn launch_for(session: &Session) -> Launch {
+    let shell = login_shell();
     let (binary, args) = match session.kind {
         Kind::Claude => claude_args(session),
         Kind::Codex => codex_args(session),
+        // A plain terminal is the login shell itself, started the way Terminal.app starts one.
+        Kind::Terminal => return Launch { program: shell, args: vec!["-i".into(), "-l".into()] },
+        // A browser has no process. pty::spawn refuses it before this is ever run.
+        Kind::Browser => return Launch { program: shell, args: Vec::new() },
     };
-    let shell = std::env::var("SHELL")
-        .ok()
-        .filter(|s| s.ends_with("zsh") || s.ends_with("bash"))
-        .unwrap_or_else(|| "/bin/zsh".into());
 
     let mut full = vec!["-i".into(), "-l".into(), "-c".into(), r#"exec "$0" "$@""#.into(), binary.into()];
     full.extend(args);
     Launch { program: shell, args: full }
+}
+
+fn login_shell() -> String {
+    std::env::var("SHELL")
+        .ok()
+        .filter(|s| s.ends_with("zsh") || s.ends_with("bash"))
+        .unwrap_or_else(|| "/bin/zsh".into())
 }
 
 fn claude_args(session: &Session) -> (&'static str, Vec<String>) {

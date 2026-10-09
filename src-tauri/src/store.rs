@@ -6,6 +6,10 @@ use std::{fs, io, path::PathBuf};
 pub enum Kind {
     Claude,
     Codex,
+    /// A plain login shell in a folder, with no agent in it.
+    Terminal,
+    /// A web page in a native webview. It has no process.
+    Browser,
 }
 
 impl Kind {
@@ -13,7 +17,14 @@ impl Kind {
         match self {
             Kind::Claude => "Claude",
             Kind::Codex => "Codex",
+            Kind::Terminal => "Terminal",
+            Kind::Browser => "Browser",
         }
+    }
+
+    /// Whether the session runs a process behind a pseudo-terminal. A browser does not.
+    pub fn has_pty(self) -> bool {
+        self != Kind::Browser
     }
 }
 
@@ -27,6 +38,9 @@ pub struct Session {
     /// The agent's own session id. Claude: same as `id`. Codex: discovered after launch.
     #[serde(default)]
     pub agent_id: Option<String>,
+    /// The page a browser session shows. Other kinds leave it unset.
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -132,12 +146,23 @@ pub fn default_name(folder: &str, taken: &[&str]) -> String {
         .expect("an unused number always exists")
 }
 
+/// Names for `count` sessions opened together from one base: each is numbered around the names in use
+/// and the names given earlier in the same batch.
+pub fn batch_names(base: &str, taken: &[&str], count: usize) -> Vec<String> {
+    let mut names: Vec<String> = Vec::with_capacity(count);
+    for _ in 0..count {
+        let in_use: Vec<&str> = taken.iter().copied().chain(names.iter().map(String::as_str)).collect();
+        names.push(default_name(base, &in_use));
+    }
+    names
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn session(id: &str, name: &str) -> Session {
-        Session { id: id.into(), kind: Kind::Claude, name: name.into(), cwd: PathBuf::from("/tmp"), agent_id: None }
+        Session { id: id.into(), kind: Kind::Claude, name: name.into(), cwd: PathBuf::from("/tmp"), agent_id: None, url: None }
     }
 
     fn store() -> Store {
@@ -202,6 +227,13 @@ mod tests {
         s.move_session("b1", 2).unwrap();
         assert!(ids(&s, 1).is_empty());
         assert_eq!(ids(&s, 2), vec!["b1"]);
+    }
+
+    #[test]
+    fn batch_names_number_around_names_in_use() {
+        assert_eq!(batch_names("nesa", &[], 3), vec!["nesa", "nesa 2", "nesa 3"]);
+        assert_eq!(batch_names("nesa", &["nesa", "nesa 3"], 2), vec!["nesa 2", "nesa 4"]);
+        assert_eq!(batch_names("chess", &["other"], 1), vec!["chess"]);
     }
 
     #[test]

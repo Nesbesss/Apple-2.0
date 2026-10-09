@@ -24,6 +24,7 @@
     restart: stroke('<path d="M2.75 8a5.25 5.25 0 1 0 1.6-3.75M2.75 2.75v2.5h2.5"/>'),
     more: '<svg viewBox="0 0 16 16" fill="currentColor"><circle cx="3.5" cy="8" r="1.1"/><circle cx="8" cy="8" r="1.1"/><circle cx="12.5" cy="8" r="1.1"/></svg>',
     terminal: stroke('<path d="m3.5 5 3 3-3 3M8.5 11.5h4"/>'),
+    globe: stroke('<circle cx="8" cy="8" r="5.5"/><path d="M2.5 8h11M8 2.5c1.8 1.8 1.8 9.2 0 11M8 2.5c-1.8 1.8-1.8 9.2 0 11"/>'),
     pencil: stroke('<path d="M10.25 3.25 12.75 5.75 6 12.5H3.5v-2.5z"/>'),
     folder: stroke('<path d="M2.5 4.5h3.25l1.5 1.5h6.25v6.5h-11z"/>'),
     copy: stroke('<rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M3.5 10.5v-6a1 1 0 0 1 1-1h6"/>'),
@@ -47,6 +48,7 @@
     done: new Set(), // ids whose work finished while the user was not looking
     dragId: null, // session id being dragged in the sidebar
     newKind: "claude",
+    newCount: 1, // how many sessions the New session dialog opens at once
     view: "home", // "home" | "group" | "settings"
     transcripts: null, // past sessions from disk; null until the first load finishes
     resumeFilter: "all", // "all" | "claude" | "codex"
@@ -222,6 +224,10 @@
   }
 
   const logo = (kind) => h("span", { class: `logo ${LOGO_CLASS[kind]}`, html: LOGOS[LOGO_KEY[kind]] });
+  // A terminal or a browser has no agent logo, so it gets a glyph of its own.
+  const kindMark = (kind) => (kind === "terminal" || kind === "browser"
+    ? h("span", { class: "kind-mark", html: ICONS[kind === "terminal" ? "terminal" : "globe"] })
+    : logo(kind));
   const icon = (name) => h("span", { class: "icon", html: ICONS[name] });
   const errorText = (err) => (typeof err === "string" ? err : (err && err.message) || String(err));
 
@@ -410,6 +416,9 @@
 
   // First display: attach xterm, size it, then start the agent.
   async function openCard(card) {
+    // A browser has no terminal to attach or process to start. It keeps its own body, and the grid re-tries
+    // this harmlessly on each render.
+    if (findSession(card.id)?.kind === "browser") return;
     card.opened = true;
     card.term.open(card.body);
     fitCard(card);
@@ -476,7 +485,7 @@
     const expand = h("button", { class: "icon-btn", onclick: () => toggleMaximize(session.id) });
     const more = h("button", { class: "icon-btn", title: "More", "aria-label": "More", onclick: (e) => openCardMenu(session.id, e.currentTarget) }, icon("more"));
     const head = h("header", { class: "card-head", ondblclick: (e) => { if (!e.target.closest("button")) toggleMaximize(session.id); } },
-      dot, logo(session.kind), name, meta, status, h("span", { class: "spacer" }), restart, expand, more);
+      dot, kindMark(session.kind), name, meta, status, h("span", { class: "spacer" }), restart, expand, more);
     const body = h("div", { class: "card-body" });
     // The entrance animation is one-shot: drop its class once it ends, so moving the card later does not replay it.
     const root = h("article", {
@@ -814,7 +823,7 @@
       ondragstart: (e) => onSessionDragStart(e, id),
       ondragend: () => endDrag(),
     },
-      logo(session.kind),
+      kindMark(session.kind),
       h("span", { class: "session-name" }, session.name),
       h("span", { class: "dot", "data-session-dot": id }));
   }
@@ -1132,23 +1141,48 @@
 
   const anyDialogOpen = () => [el.sessionDialog, el.confirmDialog, el.promptDialog].some((d) => d.open);
 
+  // Kinds of the next session. The dialog's own segmented control, not the Home filter that shares the class.
+  const NAME_HINT = {
+    claude: "Defaults to the agent name",
+    codex: "Defaults to the agent name",
+    terminal: "Defaults to the folder name",
+    browser: "Defaults to the site",
+  };
+  const MAX_BATCH = 8; // matches the backend: more than this in one request is refused
+
   function setKind(kind) {
     state.newKind = kind;
-    document.querySelectorAll(".segmented button").forEach((btn) =>
+    document.querySelectorAll("#new-session .segmented button").forEach((btn) =>
       btn.setAttribute("aria-checked", String(btn.dataset.kind === kind)));
+    const browser = kind === "browser";
+    $("#session-folder-field").hidden = browser;
+    $("#session-url-field").hidden = !browser;
+    $("#session-name").placeholder = NAME_HINT[kind];
+  }
+
+  // How many sessions of the chosen kind to open together.
+  function setCount(n) {
+    state.newCount = Math.min(MAX_BATCH, Math.max(1, n));
+    $("#session-count").textContent = String(state.newCount);
+    $("#count-less").disabled = state.newCount === 1;
+    $("#count-more").disabled = state.newCount === MAX_BATCH;
+    $("#session-start").textContent = state.newCount > 1 ? `Start ${state.newCount}` : "Start";
   }
 
   function openSessionDialog(kind = state.newKind) {
     if (!currentGroup() || anyDialogOpen()) return;
     closeMenu();
     setKind(kind);
+    setCount(1);
     $("#session-name").value = "";
     $("#session-cwd").value = stored.get("lastCwd") || "";
+    $("#session-url").value = "";
     $("#session-error").hidden = true;
     $("#session-start").disabled = false;
     renderRecent();
     el.sessionDialog.showModal();
-    ($("#session-cwd").value ? $("#session-name") : $("#session-cwd")).focus();
+    if (kind === "browser") $("#session-url").focus();
+    else ($("#session-cwd").value ? $("#session-name") : $("#session-cwd")).focus();
   }
 
   // Folders the user has started sessions in, most recent first.
@@ -1192,29 +1226,36 @@
 
   async function submitSession(e) {
     e.preventDefault();
+    const kind = state.newKind;
+    const browser = kind === "browser";
     const cwd = $("#session-cwd").value.trim();
-    if (!cwd) { showSessionError("Choose a folder for the session."); return; }
+    if (!browser && !cwd) { showSessionError("Choose a folder for the session."); return; }
     const start = $("#session-start");
     start.disabled = true;
     $("#session-error").hidden = true;
     try {
-      const session = await invoke("create_session", {
+      const created = await invoke("create_sessions", {
         groupIndex: state.selected,
-        kind: state.newKind,
+        kind,
+        count: state.newCount,
         name: $("#session-name").value.trim(),
-        cwd,
+        cwd: browser ? "" : cwd, // a browser has no folder, so a folder left in the hidden field is not sent
+        url: browser ? $("#session-url").value.trim() || null : null,
       });
-      stored.set("lastCwd", session.cwd);
-      state.status[session.id] = { running: true, exited: false, working: false };
-      state.focusedId = session.id;
+      if (!browser) stored.set("lastCwd", created[0].cwd);
+      if (!browser) created.forEach((s) => { state.status[s.id] = { running: true, exited: false, working: false }; });
+      state.focusedId = created[0].id;
       state.maximizedId = null;
       state.view = "group";
       el.sessionDialog.close();
       applyStore(await invoke("load_store"));
-      focusCard(session.id);
+      focusCard(created[0].id);
     } catch (err) {
       showSessionError(errorText(err));
       start.disabled = false;
+      // Sessions started before the failure are saved already, so they are shown too.
+      const loaded = await attempt("load_store");
+      if (loaded.ok) applyStore(loaded.value);
     }
   }
 
@@ -1280,7 +1321,7 @@
   function liveRow(session, st) {
     const index = groups().findIndex((g) => g.sessions.some((s) => s.id === session.id));
     return h("button", { class: "row row-button", type: "button", onclick: () => focusSession(session.id) },
-      logo(session.kind),
+      kindMark(session.kind),
       h("span", { class: "row-main" },
         h("span", { class: "row-title" }, session.name),
         h("span", { class: "row-meta" }, `${groups()[index].name} · ${shortPath(session.cwd)}`)),
@@ -1436,6 +1477,8 @@
       node.addEventListener("click", () => showView(node.dataset.view)));
     $("#home-claude").addEventListener("click", () => openSessionDialog("claude"));
     $("#home-codex").addEventListener("click", () => openSessionDialog("codex"));
+    $("#home-terminal").addEventListener("click", () => openSessionDialog("terminal"));
+    $("#home-browser").addEventListener("click", () => openSessionDialog("browser"));
     $("#resume-refresh").addEventListener("click", loadTranscripts);
     el.resumeSearch.addEventListener("input", (e) => {
       state.resumeQuery = e.target.value;
@@ -1863,11 +1906,14 @@
     $("#new-group").addEventListener("click", createGroup);
     $("#new-claude").addEventListener("click", () => openSessionDialog("claude"));
     $("#new-codex").addEventListener("click", () => openSessionDialog("codex"));
+    $("#new-terminal").addEventListener("click", () => openSessionDialog("terminal"));
     $("#empty-claude").addEventListener("click", () => openSessionDialog("claude"));
     $("#empty-codex").addEventListener("click", () => openSessionDialog("codex"));
 
-    document.querySelectorAll(".segmented button").forEach((btn) =>
+    document.querySelectorAll("#new-session .segmented button").forEach((btn) =>
       btn.addEventListener("click", () => setKind(btn.dataset.kind)));
+    $("#count-less").addEventListener("click", () => setCount(state.newCount - 1));
+    $("#count-more").addEventListener("click", () => setCount(state.newCount + 1));
     $("#browse").addEventListener("click", browseFolder);
     el.alertsToggle.addEventListener("click", toggleAlerts);
     bindHomeAndSettings();

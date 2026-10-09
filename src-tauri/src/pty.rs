@@ -91,8 +91,11 @@ struct ExitEvent {
     code: Option<u32>,
 }
 
-/// Starts the agent for `session` in its folder and streams its output to the UI.
+/// Starts the agent (or shell) for `session` in its folder and streams its output to the UI.
 pub fn spawn(app: &AppHandle, session: &Session) -> Result<Pty, String> {
+    if !session.kind.has_pty() {
+        return Err("A browser session has no terminal".into());
+    }
     let launch = agents::launch_for(session);
     let pair = native_pty_system()
         .openpty(PtySize { rows: DEFAULT_ROWS, cols: DEFAULT_COLS, pixel_width: 0, pixel_height: 0 })
