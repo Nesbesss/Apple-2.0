@@ -167,6 +167,55 @@ kbd {
 
 .sidebar-foot { padding: 8px; border-top: 1px solid var(--line); }
 
+/* Usage meters above the Settings link. The bar fills with the share used; it turns amber at 70% and red at 90%. */
+.usage {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  width: 100%;
+  padding: 8px 10px 9px;
+  margin-bottom: 4px;
+  border-radius: 8px;
+  text-align: left;
+  transition: background-color var(--ease);
+}
+.usage:hover { background: var(--hover); }
+.usage-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: "name text" "track track";
+  column-gap: 8px;
+  row-gap: 4px;
+  font-size: 11px;
+  line-height: 1.2;
+}
+.usage-name { grid-area: name; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-weight: 600; }
+.usage-name em { font-style: normal; font-weight: 400; color: var(--dim); }
+.usage-text {
+  grid-area: text;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.usage-track { grid-area: track; height: 4px; border-radius: 2px; background: var(--card); overflow: hidden; }
+.usage-fill {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width 400ms var(--ease-out), background-color 200ms ease;
+}
+.usage-row.is-warm .usage-fill { background: var(--warn); }
+.usage-row.is-hot .usage-fill { background: var(--fail); }
+.usage-row.is-hot .usage-text { color: var(--fail); }
+.usage-input { width: 84px; flex: none; }
+.setting-hint code { font: 12px var(--font-mono); color: var(--text); }
+
 .group-list {
   flex: 1;
   min-height: 0;

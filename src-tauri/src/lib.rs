@@ -6,6 +6,7 @@ mod pty;
 mod sound;
 mod store;
 mod transcripts;
+mod usage;
 
 use std::{
     collections::HashMap,
@@ -50,6 +51,7 @@ pub fn run() {
                 ptys: Mutex::new(HashMap::new()),
                 dictation: Default::default(),
             });
+            app.manage(usage::UsageState::default());
             if let Err(err) = dictation::warm(app.handle(), &app.state::<AppState>()) {
                 eprintln!("dictation: {err}");
             }
@@ -87,6 +89,7 @@ pub fn run() {
             commands::session_status,
             commands::list_transcripts,
             commands::resume_session,
+            usage::usage_snapshot,
             dictation::dictation_start,
             dictation::dictation_stop,
             dictation::dictation_cancel,

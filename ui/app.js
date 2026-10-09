@@ -116,7 +116,8 @@
   // falls back to the defaults instead of breaking the app.
   const SETTINGS_KEY = "settings";
   const HEX = /^#[0-9a-f]{6}$/i;
-  const DEFAULT_SETTINGS = { accent: "#7c9cff", surface: "default", done: "#4ac26b", fail: "#f06b6b", claude: "#d97757", hotkey: "alt" };
+  // claudeLimit is tokens per five hours, 0 when not set. claudeLimitAt is when it was set (Unix ms).
+  const DEFAULT_SETTINGS = { accent: "#7c9cff", surface: "default", done: "#4ac26b", fail: "#f06b6b", claude: "#d97757", hotkey: "alt", claudeLimit: 0, claudeLimitAt: 0 };
   const SURFACES = {
     default: { label: "Default", canvas: "#121213", sidebar: "#171718", card: "#1c1c1e" },
     midnight: { label: "Midnight", canvas: "#0b0e18", sidebar: "#10141f", card: "#151a29" },
@@ -158,6 +159,8 @@
       fail: pick("fail", isColor),
       claude: pick("claude", isColor),
       hotkey: pick("hotkey", (value) => Object.keys(HOTKEYS).includes(value)),
+      claudeLimit: pick("claudeLimit", (value) => Number.isFinite(value) && value >= 0),
+      claudeLimitAt: pick("claudeLimitAt", (value) => Number.isFinite(value) && value >= 0),
     };
   }
 
@@ -1397,6 +1400,7 @@
 
     el.statusColors.replaceChildren(...STATUS_COLORS.map(({ key, label }) => colorRow(key, label)));
     el.alertsToggle.setAttribute("aria-checked", String(alertsOn()));
+    renderClaudeLimit();
   }
 
   // A radio-style option. The checked one is outlined.
@@ -1430,6 +1434,152 @@
     renderSettings();
   }
 
+  // ------------------------------------------------------------------- usage
+
+  // What Claude and Codex have used on this Mac. Codex's limits are its own numbers, read from its logs.
+  // Claude Code keeps its plan limit off disk, so Claude use is an estimate against a limit set in Settings.
+  const USAGE_REFRESH_MS = 30 * 1000;
+  const HOUR_MS = 60 * 60 * 1000;
+  const IDLE_TOKENS_PER_HOUR = 10000; // below this, Claude counts as idle rather than close to its limit
+  let usageSnapshot = null;
+  let usageBusy = false;
+
+  function formatTokens(n) {
+    if (n >= 1e6) return `${(n / 1e6).toFixed(n >= 1e8 ? 0 : 1)}M`;
+    if (n >= 1e3) return `${Math.round(n / 1e3)}k`;
+    return String(Math.round(n));
+  }
+
+  // 40m, 2h 05m, 3d 4h
+  function formatSpan(ms) {
+    const minutes = Math.max(0, Math.round(ms / 60000));
+    if (minutes < 60) return `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 48) return `${hours}h ${String(minutes % 60).padStart(2, "0")}m`;
+    return `${Math.floor(hours / 24)}d ${hours % 24}h`;
+  }
+
+  // Claude: tokens in the last five hours against the limit the user set. The share is null without a limit.
+  function claudeUsage(claude) {
+    const detail = `Estimated from Claude Code transcripts: ${formatTokens(claude.tokens5h)} tokens in the last five hours, from ${claude.messages5h} messages. Input, cache writes and output count. Cache reads (${formatTokens(claude.cacheRead5h)}) do not.`;
+    const limit = settings.claudeLimit;
+    if (!limit) return { share: null, text: `${formatTokens(claude.tokens5h)} in 5h · set limit`, title: detail };
+    const share = claude.tokens5h / limit;
+    const remaining = Math.max(0, limit - claude.tokens5h);
+    let text = `${Math.round(share * 100)}%`;
+    let pace = "";
+    if (remaining === 0) {
+      text += " · limit reached";
+    } else if (claude.tokensLastHour < IDLE_TOKENS_PER_HOUR) {
+      text += " · idle";
+    } else {
+      const left = formatSpan((remaining / claude.tokensLastHour) * HOUR_MS);
+      text += ` · ${left} left`;
+      pace = ` At the last hour's pace, about ${left} remain before the limit.`;
+    }
+    return { share, text, title: `${detail} Against a limit of about ${formatTokens(limit)}.${pace}` };
+  }
+
+  // One Codex window, from the newest report Codex wrote. The pace is the average since the window opened.
+  function codexUsage(win, now) {
+    const used = win.usedPercent;
+    const untilReset = win.resetsAtMs - now;
+    const asOf = `Codex reported this ${formatSpan(now - win.observedAtMs)} ago.`;
+    if (used <= 0) return { share: 0, text: `unused · resets in ${formatSpan(untilReset)}`, title: `No use in this window. ${asOf}` };
+    const percent = `${Math.round(used)}%`;
+    const elapsed = win.observedAtMs - (win.resetsAtMs - win.windowMinutes * 60000);
+    if (elapsed < 5 * 60000) return { share: used / 100, text: `${percent} · resets in ${formatSpan(untilReset)}`, title: asOf };
+    const hoursLeft = (100 - used) / (used / (elapsed / HOUR_MS));
+    const outlasts = hoursLeft * HOUR_MS >= untilReset;
+    const text = outlasts ? `${percent} · lasts to reset` : `${percent} · ${formatSpan(hoursLeft * HOUR_MS)} left`;
+    const pace = outlasts ? "At this pace the window lasts until it resets." : `At this pace it runs out in about ${formatSpan(hoursLeft * HOUR_MS)}.`;
+    return { share: used / 100, text, title: `${asOf} ${pace}` };
+  }
+
+  function setUsageRow(row, share, text, title) {
+    row.querySelector(".usage-text").textContent = text;
+    row.title = title;
+    const fill = Math.min(1, Math.max(0, share ?? 0));
+    row.querySelector(".usage-fill").style.width = `${(fill * 100).toFixed(1)}%`;
+    row.classList.toggle("is-warm", fill >= 0.7 && fill < 0.9);
+    row.classList.toggle("is-hot", fill >= 0.9);
+  }
+
+  function renderUsage() {
+    const snap = usageSnapshot;
+    if (!snap) return;
+    const now = Date.now();
+    const claude = claudeUsage(snap.claude);
+    setUsageRow($("#usage-claude"), claude.share, claude.text, claude.title);
+
+    const codex = snap.codex;
+    const five = codex && codex.fiveHour ? codexUsage(codex.fiveHour, now) : null;
+    const week = codex && codex.weekly ? codexUsage(codex.weekly, now) : null;
+    if (five) setUsageRow($("#usage-codex"), five.share, five.text, five.title);
+    else setUsageRow($("#usage-codex"), null, "no recent use", "Codex has no rate-limit report from the last eight days.");
+    $("#usage-week").hidden = !week;
+    if (week) setUsageRow($("#usage-week"), week.share, week.text, week.title);
+  }
+
+  async function refreshUsage() {
+    if (usageBusy || document.hidden) return; // the meters are only read while the window is visible
+    usageBusy = true;
+    try {
+      usageSnapshot = await invoke("usage_snapshot");
+      renderUsage();
+      if (state.view === "settings") renderClaudeLimit();
+    } catch {
+      setUsageRow($("#usage-claude"), null, "unavailable", "Usage could not be read from this Mac's logs.");
+      setUsageRow($("#usage-codex"), null, "unavailable", "Usage could not be read from this Mac's logs.");
+    } finally {
+      usageBusy = false;
+    }
+  }
+
+  function renderClaudeLimit() {
+    const limit = settings.claudeLimit;
+    $("#claude-limit-status").textContent = limit
+      ? `about ${formatTokens(limit)} tokens per 5 hours, set ${new Date(settings.claudeLimitAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}`
+      : "Not set";
+    $("#claude-limit-clear").hidden = !limit;
+  }
+
+  // The limit is calibrated from the percent /usage shows right now: limit = tokens so far / share used.
+  async function calibrateClaudeLimit() {
+    const error = $("#claude-limit-error");
+    const input = $("#claude-calibrate-input");
+    const percent = Number(input.value);
+    await refreshUsage();
+    const tokens = usageSnapshot ? usageSnapshot.claude.tokens5h : 0;
+    let problem = "";
+    if (!Number.isFinite(percent) || percent < 1 || percent > 100) problem = "Enter the percent /usage shows, from 1 to 100.";
+    else if (percent < 5) problem = "Use a reading of 5% or more. Smaller readings round too much to give a useful limit.";
+    else if (tokens <= 0) problem = "There are no Claude tokens in the last five hours to measure against yet. Use Claude, then set the limit.";
+    error.textContent = problem;
+    error.hidden = !problem;
+    if (problem) return;
+    settings.claudeLimit = Math.round(tokens / (percent / 100));
+    settings.claudeLimitAt = Date.now();
+    saveSettings();
+    input.value = "";
+    renderClaudeLimit();
+    renderUsage();
+  }
+
+  function clearClaudeLimit() {
+    settings.claudeLimit = 0;
+    settings.claudeLimitAt = 0;
+    saveSettings();
+    renderClaudeLimit();
+    renderUsage();
+  }
+
+  function startUsage() {
+    refreshUsage();
+    setInterval(refreshUsage, USAGE_REFRESH_MS);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshUsage(); });
+  }
+
   // Navigation, the Home actions, and the Settings controls. Called once from bindUi.
   function bindHomeAndSettings() {
     document.querySelectorAll("[data-view]").forEach((node) =>
@@ -1437,6 +1587,13 @@
     $("#home-claude").addEventListener("click", () => openSessionDialog("claude"));
     $("#home-codex").addEventListener("click", () => openSessionDialog("codex"));
     $("#resume-refresh").addEventListener("click", loadTranscripts);
+    $("#usage").addEventListener("click", () => {
+      showView("settings");
+      requestAnimationFrame(() => $("#usage-settings").scrollIntoView({ block: "start" }));
+    });
+    $("#claude-calibrate").addEventListener("click", calibrateClaudeLimit);
+    $("#claude-calibrate-input").addEventListener("keydown", (e) => { if (e.key === "Enter") calibrateClaudeLimit(); });
+    $("#claude-limit-clear").addEventListener("click", clearClaudeLimit);
     el.resumeSearch.addEventListener("input", (e) => {
       state.resumeQuery = e.target.value;
       renderResumeList();
@@ -1916,6 +2073,7 @@
     bindUi();
     await bindBackendEvents();
     syncAlerts();
+    startUsage();
     // Keeps "Working · 1m 04s" counting up. Only working cards change, so this is cheap.
     setInterval(() => state.workingSince.forEach((_, id) => updateCardStatus(id)), 1000);
 
