@@ -6,7 +6,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::{
     fs,
-    io::Read,
+    io::{BufRead, BufReader, Read},
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
 };
@@ -90,8 +90,8 @@ fn candidates(claude: &Path, codex: &Path) -> Vec<Candidate> {
 
     // Codex: sessions/YYYY/MM/DD/rollout-<timestamp>-<session id>.jsonl
     for path in codex_rollouts(codex) {
-        let Some(id) = path.file_name().and_then(|n| n.to_str()).and_then(codex_id) else { continue };
-        out.push(Candidate { kind: Kind::Codex, id: id.into(), updated: updated_millis(&path), path, });
+        let Some(id) = codex_session_id(&path) else { continue };
+        out.push(Candidate { kind: Kind::Codex, id, updated: updated_millis(&path), path });
     }
     out
 }
@@ -118,11 +118,17 @@ fn codex_rollouts(root: &Path) -> Vec<PathBuf> {
     files
 }
 
-/// The session id at the end of a rollout file name. Codex ids are 36-character UUIDs.
-fn codex_id(file_name: &str) -> Option<&str> {
-    let stem = file_name.strip_prefix("rollout-")?.strip_suffix(".jsonl")?;
-    let id = stem.get(stem.len().checked_sub(36)?..)?;
-    is_valid_id(id).then_some(id)
+/// The id from a Codex rollout's first line. The file name carries an id too, but it can differ from
+/// this one, and this is the id `codex resume` takes. Subagent rollouts are not sessions, so they give None.
+fn codex_session_id(path: &Path) -> Option<String> {
+    let mut line = String::new();
+    BufReader::new(fs::File::open(path).ok()?).read_line(&mut line).ok()?;
+    let meta: Value = serde_json::from_str(&line).ok()?;
+    if meta["type"] != "session_meta" || meta["payload"]["source"].is_object() {
+        return None;
+    }
+    let id = meta["payload"]["id"].as_str()?;
+    is_valid_id(id).then(|| id.to_string())
 }
 
 fn updated_millis(path: &Path) -> u64 {
@@ -207,25 +213,39 @@ fn parse_codex<'a>(lines: impl IntoIterator<Item = &'a str>) -> Option<CodexHead
     if meta["type"] != "session_meta" || meta["payload"]["source"].is_object() {
         return None;
     }
+    // A user turn is either a response message or a user_message event. Codex's environment context
+    // and AGENTS.md instructions come first in the rollout, so the title is the first real prompt.
     let title = lines
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .filter(|v| v["type"] == "response_item" && v["payload"]["type"] == "message" && v["payload"]["role"] == "user")
-        .find_map(|v| prompt_text(&v["payload"]["content"]));
+        .find_map(|v| {
+            let payload = &v["payload"];
+            if v["type"] == "response_item" && payload["type"] == "message" && payload["role"] == "user" {
+                prompt_text(&payload["content"])
+            } else if v["type"] == "event_msg" && payload["type"] == "user_message" {
+                prompt_text(&payload["message"])
+            } else {
+                None
+            }
+        });
     Some(CodexHead { cwd: meta["payload"]["cwd"].as_str().map(PathBuf::from), title })
 }
 
-/// The text of a user message: a plain string, or its first text block. Markup such as `<command-name>`
-/// or Codex's environment context is not a prompt, so it is skipped.
+/// The first real prompt in a message's content: a plain string, or any text block. Markup such as
+/// `<command-name>` or Codex's environment context is not a prompt, so it is passed over.
 fn prompt_text(content: &Value) -> Option<String> {
-    let text = match content {
-        Value::String(s) => s.as_str(),
+    match content {
+        Value::String(text) => real_prompt(text),
         Value::Array(blocks) => blocks
             .iter()
-            .find(|b| b["type"] == "text" || b["type"] == "input_text")?["text"]
-            .as_str()?,
-        _ => return None,
-    };
-    if text.trim_start().starts_with('<') || text.trim_start().starts_with("# AGENTS.md") {
+            .filter(|b| b["type"] == "text" || b["type"] == "input_text")
+            .find_map(|b| b["text"].as_str().and_then(real_prompt)),
+        _ => None,
+    }
+}
+
+fn real_prompt(text: &str) -> Option<String> {
+    let start = text.trim_start();
+    if start.starts_with('<') || start.starts_with("# AGENTS.md") {
         return None;
     }
     tidy(text)
@@ -314,9 +334,13 @@ mod tests {
     }
 
     fn codex_meta(cwd: &Path, source: Value) -> String {
+        codex_meta_with_id(CODEX_ID, cwd, source)
+    }
+
+    fn codex_meta_with_id(id: &str, cwd: &Path, source: Value) -> String {
         serde_json::json!({
             "type": "session_meta",
-            "payload": { "id": CODEX_ID, "cwd": cwd, "source": source }
+            "payload": { "id": id, "cwd": cwd, "source": source }
         })
         .to_string()
     }
@@ -429,7 +453,46 @@ mod tests {
         assert!(is_valid_id(CLAUDE_ID));
         assert!(!is_valid_id("../../etc/passwd"));
         assert!(!is_valid_id(""));
-        assert_eq!(codex_id("rollout-2026-10-02T17-28-54-01a0fd3b-8f6e-7191-a8d1-15e905f89233.jsonl"), Some(CODEX_ID));
-        assert_eq!(codex_id("notes.jsonl"), None);
+    }
+
+    #[test]
+    fn codex_id_comes_from_the_rollout_not_its_file_name() {
+        let roots = Roots::new();
+        let folder = roots.folder("app");
+        let inside = "aaaaaaaa-0000-4000-8000-000000000001";
+        let file_name = "bbbbbbbb-0000-4000-8000-000000000002";
+        roots.codex_file(file_name, &[codex_meta_with_id(inside, &folder, Value::Null), codex_prompt("Ship it")], 1_000);
+
+        let listed = recent_in(&roots.claude(), &roots.codex(), 10);
+        assert_eq!(listed.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), vec![inside]);
+        assert!(find_in(&roots.claude(), &roots.codex(), Kind::Codex, inside).is_some());
+        assert!(find_in(&roots.claude(), &roots.codex(), Kind::Codex, file_name).is_none());
+    }
+
+    #[test]
+    fn recent_skips_codex_subagent_rollouts() {
+        let roots = Roots::new();
+        let folder = roots.folder("app");
+        let subagent = serde_json::json!({ "subagent": "review" });
+        roots.codex_file(CODEX_ID, &[codex_meta_with_id(CODEX_ID, &folder, subagent), codex_prompt("Review")], 1_000);
+        assert!(recent_in(&roots.claude(), &roots.codex(), 10).is_empty());
+    }
+
+    #[test]
+    fn codex_title_reads_past_markup_blocks_and_user_message_events() {
+        let markup_then_prompt = serde_json::json!({
+            "type": "response_item",
+            "payload": { "type": "message", "role": "user", "content": [
+                { "type": "input_text", "text": "<environment_context>\n  <cwd>/work/app</cwd>\n</environment_context>" },
+                { "type": "input_text", "text": "Write the release notes" }
+            ] }
+        })
+        .to_string();
+        let lines = [codex_meta(Path::new("/work/app"), Value::Null), markup_then_prompt];
+        assert_eq!(parse_codex(lines.iter().map(String::as_str)).unwrap().title.as_deref(), Some("Write the release notes"));
+
+        let event = serde_json::json!({ "type": "event_msg", "payload": { "type": "user_message", "message": "Fix the sync bug" } }).to_string();
+        let lines = [codex_meta(Path::new("/work/app"), Value::Null), event];
+        assert_eq!(parse_codex(lines.iter().map(String::as_str)).unwrap().title.as_deref(), Some("Fix the sync bug"));
     }
 }
