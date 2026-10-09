@@ -54,6 +54,7 @@
     done: new Set(), // ids whose work finished while the user was not looking
     dragId: null, // session id being dragged in the sidebar
     dragGroup: null, // group index being dragged in the sidebar
+    settingsTab: "voice", // the Settings section on show: "voice" | "appearance" | "alerts" | "usage"
     tokens: {}, // session id -> tokens it has used, from the last count (see refreshTokens)
     newKind: "claude",
     newCount: 1, // how many sessions the New session dialog opens at once
@@ -95,6 +96,8 @@
     homeHint: $("#home-hint"),
     liveBlock: $("#home-live"),
     liveList: $("#live-list"),
+    workingBlock: $("#home-working"),
+    workingList: $("#working-list"),
     groupCards: $("#group-cards"),
     resumeList: $("#resume-list"),
     resumeGroup: $("#resume-group"),
@@ -162,10 +165,10 @@
   ];
   // Voice modes, by the modifier keys that are held. Each one is a hold-to-talk chord.
   const HOTKEYS = {
-    alt: { label: "Option", symbol: "⌥", keys: ["alt"] },
-    ctrl: { label: "Control", symbol: "⌃", keys: ["ctrl"] },
-    "alt+meta": { label: "Option and Command", symbol: "⌥⌘", keys: ["alt", "meta"] },
-    "ctrl+alt": { label: "Control and Option", symbol: "⌃⌥", keys: ["ctrl", "alt"] },
+    alt: { label: "Option", symbol: "⌥", keys: ["alt"], hint: "The default. Hold Option on its own." },
+    ctrl: { label: "Control", symbol: "⌃", keys: ["ctrl"], hint: "Hold Control on its own." },
+    "alt+meta": { label: "Option and Command", symbol: "⌥⌘", keys: ["alt", "meta"], hint: "Hold both keys together." },
+    "ctrl+alt": { label: "Control and Option", symbol: "⌃⌥", keys: ["ctrl", "alt"], hint: "Hold both keys together." },
   };
   const MODIFIER_FLAG = { alt: "altKey", ctrl: "ctrlKey", meta: "metaKey", shift: "shiftKey" };
   // Sounds a finished agent can play. They are made by scripts/make-done-pings.mjs. The first one is the
@@ -860,6 +863,8 @@
   function renderView() {
     const view = state.view;
     el.toolbar.hidden = view !== "group";
+    // The voice pill's idle dot floats in the toolbar, so it only shows where there is a toolbar.
+    document.body.classList.toggle("view-group", view === "group");
     el.stage.hidden = view !== "group";
     el.home.hidden = view !== "home";
     el.settings.hidden = view !== "settings";
@@ -1524,10 +1529,13 @@
     if (done) parts.push(`${done} finished`);
     el.homeSub.textContent = parts.join(" · ");
 
-    // Finished sessions come first: they are waiting for the user.
-    attention.sort((a, b) => (a.st === b.st ? 0 : a.st === "done" ? -1 : 1));
-    el.liveBlock.hidden = attention.length === 0;
-    el.liveList.replaceChildren(...attention.map((item) => liveRow(item.session, item.st)));
+    // "Needs you" holds only what waits for the user. Sessions still working are listed apart.
+    const finished = attention.filter((item) => item.st === "done");
+    const running = attention.filter((item) => item.st === "working");
+    el.liveBlock.hidden = finished.length === 0;
+    el.liveList.replaceChildren(...finished.map((item) => liveRow(item.session, item.st)));
+    el.workingBlock.hidden = running.length === 0;
+    el.workingList.replaceChildren(...running.map((item) => liveRow(item.session, item.st)));
     el.groupCards.replaceChildren(
       ...groups().map((group, index) => groupCard(group, index)),
       h("button", { class: "group-card group-card-new", type: "button", onclick: createGroup }, icon("plus"), h("span", {}, "New group")));
@@ -1616,6 +1624,8 @@
   // One of four stages: making, failed or stopped, showing results, or waiting for a first request.
   function renderImageGenStage() {
     const g = state.imageGen;
+    // The empty stage is a short prompt, not a large canvas. Results keep the full height.
+    el.imagegenStage.classList.toggle("is-empty", !g.busy && !g.error && !g.stopped && !g.images.length);
     if (g.busy) el.imagegenStage.replaceChildren(imagegenBusy());
     else if (g.error) el.imagegenStage.replaceChildren(imagegenMessage("error", g));
     else if (g.stopped) el.imagegenStage.replaceChildren(imagegenMessage("stopped", g));
@@ -1958,7 +1968,7 @@
     } else if (item.running) {
       action = h("button", { class: "btn btn-outline", type: "button", disabled: true, title: "It is open in another terminal. Close it there first." }, "In use");
     } else {
-      action = h("button", { class: "btn btn-primary", type: "button", onclick: (e) => resumeTranscript(item, e.currentTarget) }, "Resume");
+      action = h("button", { class: "btn btn-outline", type: "button", onclick: (e) => resumeTranscript(item, e.currentTarget) }, "Resume");
     }
     return h("div", { class: "row", title: item.cwd },
       logo(item.kind),
@@ -1990,9 +2000,14 @@
   // --------------------------------------------------------------- settings
 
   function renderSettings() {
-    el.hotkeyChoices.replaceChildren(...Object.keys(HOTKEYS).map((key) =>
-      choice(key === settings.hotkey, () => setSetting("hotkey", key),
-        h("span", { class: "choice-symbol" }, HOTKEYS[key].symbol), HOTKEYS[key].label)));
+    el.hotkeyChoices.replaceChildren(...Object.keys(HOTKEYS).map((key) => {
+      const mode = HOTKEYS[key];
+      const card = choice(key === settings.hotkey, () => setSetting("hotkey", key),
+        h("span", { class: "choice-symbol" }, mode.symbol),
+        h("span", { class: "choice-text" }, h("strong", {}, mode.label), h("small", {}, mode.hint)));
+      card.classList.add("choice-card");
+      return card;
+    }));
 
     el.accentSwatches.replaceChildren(...ACCENTS.map((accent) => h("button", {
       class: "swatch",
@@ -2007,9 +2022,11 @@
 
     el.surfaceChoices.replaceChildren(...Object.keys(SURFACES).map((key) => {
       const surface = SURFACES[key];
-      return choice(key === settings.surface, () => setSetting("surface", key),
+      const card = choice(key === settings.surface, () => setSetting("surface", key),
         h("span", { class: "surface-preview", style: `--p-canvas: ${surface.canvas}; --p-sidebar: ${surface.sidebar}; --p-card: ${surface.card}` }),
-        surface.label);
+        h("span", { class: "surface-name" }, surface.label));
+      card.classList.add("surface-card");
+      return card;
     }));
 
     el.statusColors.replaceChildren(...STATUS_COLORS.map(({ key, label }) => colorRow(key, label)));
@@ -2019,6 +2036,29 @@
       h("button", { class: "ping-preview", type: "button", title: `Preview ${name}`, "aria-label": `Preview ${name}`, onclick: () => previewDonePing(name) }))));
     renderClaudeLimit();
     renderClaudeStatus();
+    renderSettingsTabs();
+  }
+
+  // Settings is split into sections. Only the chosen one is shown. The choice lives in state, so a
+  // setting that re-renders the page keeps the section open.
+  const SETTINGS_TABS = ["voice", "appearance", "alerts", "usage"];
+
+  function setSettingsTab(tab) {
+    if (!SETTINGS_TABS.includes(tab)) return;
+    state.settingsTab = tab;
+    stored.set("settingsTab", tab);
+    renderSettingsTabs();
+  }
+
+  function renderSettingsTabs() {
+    document.querySelectorAll("#settings-tabs .settings-tab").forEach((btn) => {
+      const on = btn.dataset.tab === state.settingsTab;
+      btn.setAttribute("aria-selected", String(on));
+      btn.tabIndex = on ? 0 : -1;
+    });
+    document.querySelectorAll("#settings [role='tabpanel']").forEach((panel) => {
+      panel.hidden = panel.dataset.tab !== state.settingsTab;
+    });
   }
 
   // A radio-style option. The checked one is outlined.
@@ -2248,8 +2288,12 @@
     action.disabled = false;
     action.textContent = status === "off" ? "Connect…" : "Disconnect";
     action.dataset.action = status === "off" ? "connect" : "disconnect";
-    // Once Claude's own numbers are in, the estimate's limit field is not needed.
+    // Once Claude's own numbers are in, the estimate's limit field is not needed. The estimate opens by itself
+    // once a limit is set, and otherwise stays as the user left it.
     $("#claude-calibrate-row").hidden = status === "live";
+    const estimate = $("#claude-estimate");
+    estimate.hidden = status === "live";
+    if (settings.claudeLimit) estimate.open = true;
   }
 
   async function toggleClaudeStatus() {
@@ -2321,10 +2365,14 @@
     $("#home-terminal").addEventListener("click", () => openSessionDialog("terminal"));
     $("#home-browser").addEventListener("click", () => openSessionDialog("browser"));
     $("#resume-refresh").addEventListener("click", loadTranscripts);
+    // The usage block opens the Usage section, from the top, whatever section was showing before.
     $("#usage").addEventListener("click", () => {
+      setSettingsTab("usage");
       showView("settings");
-      requestAnimationFrame(() => $("#usage-settings").scrollIntoView({ block: "start" }));
+      requestAnimationFrame(() => { $("#settings").scrollTop = 0; });
     });
+    document.querySelectorAll("#settings-tabs .settings-tab").forEach((btn) =>
+      btn.addEventListener("click", () => setSettingsTab(btn.dataset.tab)));
     $("#claude-calibrate").addEventListener("click", calibrateClaudeLimit);
     $("#claude-calibrate-input").addEventListener("keydown", (e) => { if (e.key === "Enter") calibrateClaudeLimit(); });
     $("#claude-limit-clear").addEventListener("click", clearClaudeLimit);
@@ -3033,6 +3081,9 @@
   async function start() {
     loadSettings();
     applyColors();
+    // The section last open comes back on launch. Anything unexpected falls back to Voice.
+    const savedTab = stored.get("settingsTab");
+    state.settingsTab = SETTINGS_TABS.includes(savedTab) ? savedTab : "voice";
     bindUi();
     await bindBackendEvents();
     syncAlerts();

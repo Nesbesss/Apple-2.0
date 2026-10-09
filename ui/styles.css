@@ -821,7 +821,7 @@ kbd {
 .resume-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 10px; }
 #resume-filter { display: inline-grid; grid-template-columns: repeat(3, auto); }
 #resume-filter button { padding: 0 12px; }
-#resume-search { flex: 1; min-width: 180px; max-width: 320px; }
+#resume-search { flex: 1; min-width: 180px; }
 .resume-into { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
 .resume-into select { width: auto; min-width: 140px; }
 
@@ -1571,6 +1571,72 @@ kbd {
   .icon-btn:active,
   .empty-action:active { transform: none; }
 }
+
+/* Settings sections: a tab row, with one section shown at a time. */
+.settings-tabs {
+  display: flex;
+  gap: 4px;
+  margin-top: 22px;
+  border-bottom: 1px solid var(--line);
+}
+.settings-tab {
+  position: relative;
+  height: 36px;
+  padding: 0 12px;
+  color: var(--muted);
+  font-weight: 500;
+  transition: color var(--ease);
+}
+.settings-tab:hover { color: var(--text); }
+.settings-tab[aria-selected="true"] { color: var(--text); }
+.settings-tab[aria-selected="true"]::after {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+.settings-tab:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: -2px; border-radius: 6px; }
+
+/* Voice keys: a two-column grid of cards, each with its symbol and a line on what it does. */
+#hotkey-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.choice-card { height: auto; padding: 12px 14px; justify-content: flex-start; text-align: left; gap: 12px; }
+.choice-card .choice-symbol { min-width: 34px; color: var(--muted); font-size: 15px; text-align: center; }
+.choice-card[aria-checked="true"] .choice-symbol { color: var(--accent); }
+.choice-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.choice-text strong { color: var(--text); font-weight: 600; }
+.choice-text small { color: var(--muted); font-size: 11.5px; line-height: 1.4; }
+
+/* Done pings: two columns, each a choice with a preview arrow beside it. */
+#ping-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 10px; }
+#ping-choices .ping-option { display: flex; align-items: center; gap: 4px; min-width: 0; }
+#ping-choices .ping-option .choice { flex: 1; min-width: 0; justify-content: flex-start; }
+
+/* The estimate without the status line: closed unless the user opens it or a limit is set. */
+.estimate { margin-top: 14px; padding: 0 14px; border: 1px solid var(--line); border-radius: 10px; }
+.estimate[open] { padding-bottom: 8px; }
+.estimate > summary { display: flex; align-items: center; height: 40px; color: var(--muted); font-weight: 500; cursor: default; list-style: none; }
+.estimate > summary::-webkit-details-marker { display: none; }
+.estimate > summary::before { content: "▸"; display: inline-block; margin-right: 8px; transition: transform var(--ease); }
+.estimate[open] > summary::before { transform: rotate(90deg); }
+.estimate > summary:hover { color: var(--text); }
+
+/* With nothing generated, the image stage is a short prompt, not a tall empty canvas. */
+.imagegen-stage.is-empty { min-height: 0; }
+.imagegen-stage.is-empty .imagegen-empty { padding: 18px 16px; }
+
+/* The idle voice pill lives in the toolbar, so it stays out of Home and Settings. Holding the keys still shows it. */
+body:not(.view-group) .dictation:not(.is-visible) { display: none; }
+
+/* Surfaces: three cards, each with a small picture of its background. */
+.surface-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 4px; }
+.surface-card { height: auto; flex-direction: column; align-items: stretch; gap: 8px; padding: 8px; }
+.surface-card .surface-preview { width: 100%; height: 48px; border-radius: 6px; }
+.surface-name { color: var(--text); font-size: 12.5px; font-weight: 500; text-align: left; padding: 0 2px; }
+.surface-card[aria-checked="true"] .surface-name { color: var(--text); }
 
 /* Scrollbars */
 

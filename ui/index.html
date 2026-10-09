@@ -116,9 +116,33 @@
           <div class="row-list" id="live-list"></div>
         </section>
 
+        <section class="page-block" id="home-working" hidden>
+          <h2 class="block-title">Working now</h2>
+          <div class="row-list" id="working-list"></div>
+        </section>
+
         <section class="page-block">
           <h2 class="block-title">Groups</h2>
           <div class="group-cards" id="group-cards"></div>
+        </section>
+
+        <section class="page-block">
+          <div class="block-head">
+            <h2 class="block-title">Resume a session</h2>
+            <button class="icon-btn" id="resume-refresh" title="Look for sessions again" aria-label="Look for sessions again" data-icon="restart"></button>
+          </div>
+          <div class="resume-tools">
+            <div class="segmented" id="resume-filter" role="radiogroup" aria-label="Agent">
+              <button type="button" role="radio" data-filter="all">All</button>
+              <button type="button" role="radio" data-filter="claude"><span class="logo logo-claude" data-logo="claude"></span>Claude</button>
+              <button type="button" role="radio" data-filter="codex"><span class="logo logo-openai" data-logo="openai"></span>Codex</button>
+            </div>
+            <input class="input" id="resume-search" type="search" placeholder="Search by title or folder" aria-label="Search sessions" spellcheck="false">
+            <label class="resume-into"><span>Into</span>
+              <select class="input" id="resume-group" aria-label="Group for the resumed session"></select>
+            </label>
+          </div>
+          <div class="row-list" id="resume-list" aria-live="polite"></div>
         </section>
 
         <!-- Image gen: shown only when this Codex can make images. Pictures are copied, then pasted into a chat. -->
@@ -143,25 +167,6 @@
           </div>
         </section>
 
-        <section class="page-block">
-          <div class="block-head">
-            <h2 class="block-title">Resume a session</h2>
-            <button class="icon-btn" id="resume-refresh" title="Look for sessions again" aria-label="Look for sessions again" data-icon="restart"></button>
-          </div>
-          <div class="resume-tools">
-            <div class="segmented" id="resume-filter" role="radiogroup" aria-label="Agent">
-              <button type="button" role="radio" data-filter="all">All</button>
-              <button type="button" role="radio" data-filter="claude"><span class="logo logo-claude" data-logo="claude"></span>Claude</button>
-              <button type="button" role="radio" data-filter="codex"><span class="logo logo-openai" data-logo="openai"></span>Codex</button>
-            </div>
-            <input class="input" id="resume-search" type="search" placeholder="Search by title or folder" aria-label="Search sessions" spellcheck="false">
-            <label class="resume-into"><span>Into</span>
-              <select class="input" id="resume-group" aria-label="Group for the resumed session"></select>
-            </label>
-          </div>
-          <div class="row-list" id="resume-list" aria-live="polite"></div>
-        </section>
-
         <p class="page-hint" id="home-hint"></p>
       </div>
     </section>
@@ -176,13 +181,20 @@
           </div>
         </header>
 
-        <section class="page-block">
+        <nav class="settings-tabs" id="settings-tabs" role="tablist" aria-label="Settings sections">
+          <button class="settings-tab" type="button" role="tab" data-tab="voice" aria-controls="panel-voice">Voice</button>
+          <button class="settings-tab" type="button" role="tab" data-tab="appearance" aria-controls="panel-appearance">Appearance</button>
+          <button class="settings-tab" type="button" role="tab" data-tab="alerts" aria-controls="panel-alerts">Alerts</button>
+          <button class="settings-tab" type="button" role="tab" data-tab="usage" aria-controls="usage-settings">Usage</button>
+        </nav>
+
+        <section class="page-block" role="tabpanel" id="panel-voice" data-tab="voice">
           <h2 class="block-title">Voice mode</h2>
           <p class="setting-hint">Hold these keys to talk. Release them to type the words into the focused session.</p>
           <div class="choice-list" id="hotkey-choices" role="radiogroup" aria-label="Voice mode keys"></div>
         </section>
 
-        <section class="page-block">
+        <section class="page-block" role="tabpanel" id="panel-appearance" data-tab="appearance">
           <h2 class="block-title">Colors</h2>
           <div class="setting-row">
             <span class="setting-label">Accent</span>
@@ -191,9 +203,10 @@
               <input class="color-input" id="accent-custom" type="color" aria-label="Custom accent color">
             </div>
           </div>
-          <div class="setting-row">
-            <span class="setting-label">Surfaces</span>
-            <div class="choice-list" id="surface-choices" role="radiogroup" aria-label="Surfaces"></div>
+          <div class="setting-stack">
+            <span class="setting-label">Surfaces
+              <small>The background of the app: sidebar, canvas and cards.</small></span>
+            <div class="surface-grid" id="surface-choices" role="radiogroup" aria-label="Surfaces"></div>
           </div>
           <div id="status-colors"></div>
           <div class="setting-footer">
@@ -201,7 +214,7 @@
           </div>
         </section>
 
-        <section class="page-block">
+        <section class="page-block" role="tabpanel" id="panel-alerts" data-tab="alerts">
           <h2 class="block-title">Notifications</h2>
           <div class="setting-row">
             <span class="setting-label">Alert when a session finishes
@@ -215,9 +228,9 @@
           </div>
         </section>
 
-        <section class="page-block" id="usage-settings">
+        <section class="page-block" role="tabpanel" id="usage-settings" data-tab="usage">
           <h2 class="block-title">Usage</h2>
-          <p class="setting-hint">Codex writes its limits to its own logs, so its numbers are exact. Claude's own limits come from Claude Code's status line, which Nesa can connect with a small script. Until it is connected, Nesa estimates Claude use from your transcripts, and that estimate needs your limit.</p>
+          <p class="setting-hint">Codex's numbers come from its own logs, so they are exact. Claude's come from Claude Code's status line once it is connected. Until then, Nesa estimates Claude use from your transcripts.</p>
           <div class="setting-row" id="claude-status-row">
             <span class="setting-label">Claude's own limits
               <small id="claude-status-text">Checking…</small></span>
@@ -225,6 +238,8 @@
               <button class="btn btn-outline" id="claude-status-action" type="button" disabled>Connect…</button>
             </div>
           </div>
+          <details class="estimate" id="claude-estimate">
+            <summary>Estimate without the status line</summary>
           <div class="setting-row" id="claude-calibrate-row">
             <span class="setting-label">Claude limit
               <small id="claude-limit-status">Not set</small></span>
@@ -236,6 +251,7 @@
           </div>
           <p class="setting-hint">In Claude Code, run <code>/usage</code>, type the percent it shows, and press Set limit. Nesa works out your limit from the Claude tokens it can see right now.</p>
           <p class="form-error" id="claude-limit-error" role="alert" hidden></p>
+          </details>
         </section>
       </div>
     </section>
