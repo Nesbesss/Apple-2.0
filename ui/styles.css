@@ -974,33 +974,38 @@ kbd {
 
 .imagegen-studio {
   margin-top: 12px;
-  display: grid;
-  grid-template-columns: minmax(250px, 320px) minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   gap: 14px;
-  align-items: stretch;
 }
-.imagegen-compose,
 .imagegen-stage {
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--card);
 }
-.imagegen-compose { display: flex; flex-direction: column; gap: 10px; padding: 14px; }
-.imagegen-label { color: var(--muted); font-size: 12px; }
+/* The composer is a single row: the prompt with its button beside it, the ideas or key hints beneath */
+.imagegen-compose {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px 12px;
+}
+.imagegen-label { grid-column: 1 / -1; color: var(--muted); font-size: 12px; }
 .imagegen-prompt {
-  flex: 1;
-  min-height: 120px;
-  resize: none;
-  padding: 10px 11px;
+  grid-column: 1;
+  min-height: 56px;
+  resize: vertical;
+  padding: 10px 12px;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--canvas);
+  border-radius: 10px;
+  background: var(--card);
   color: var(--text);
   font: 13px/1.5 var(--font-ui);
 }
 .imagegen-prompt::placeholder { color: var(--dim); }
 .imagegen-prompt:focus { outline: none; border-color: var(--accent); }
-.imagegen-ideas { display: flex; flex-wrap: wrap; gap: 6px; }
+.imagegen-go { grid-column: 2; height: 36px; min-width: 132px; justify-content: center; }
+.imagegen-ideas { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; }
 .imagegen-ideas[hidden] { display: none; }
 .imagegen-idea {
   height: auto;
@@ -1013,11 +1018,10 @@ kbd {
   text-align: left;
 }
 .imagegen-idea:hover { color: var(--text); border-color: var(--selected); background: var(--hover); }
-.imagegen-compose-foot { margin-top: auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.imagegen-compose-foot { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .imagegen-count { color: var(--dim); font-size: 11.5px; font-variant-numeric: tabular-nums; }
 .imagegen-keys { color: var(--dim); font-size: 11.5px; }
 .imagegen-keys kbd { font-size: 10.5px; }
-.imagegen-go { margin-left: auto; height: 30px; }
 
 .imagegen-stage {
   min-width: 0;
@@ -1208,9 +1212,6 @@ kbd {
 .imagegen-thumb:hover { transform: translateY(-1px); }
 .imagegen-thumb[aria-checked="true"] { border-color: transparent; box-shadow: 0 0 0 2px var(--accent); }
 
-@media (max-width: 760px) {
-  .imagegen-studio { grid-template-columns: 1fr; }
-}
 @media (prefers-reduced-motion: reduce) {
   .imagegen-skeleton,
   .imagegen-spinner,
