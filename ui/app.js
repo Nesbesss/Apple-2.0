@@ -2667,11 +2667,14 @@
     invoke("play_sound", { name: SOUNDS[name] }).catch(() => {});
   }
 
-  // The transcript is one line clipped at the start, so the newest words stay visible. Messages are the
-  // reverse: clipped at the end, so the first words stay readable.
+  // A transcript is one line, scrolled to its end, so the newest words stay visible. Short text stays at
+  // the start, where it reads, and the left edge fades only while text is clipped behind it. Messages
+  // keep their first words and end with an ellipsis instead.
   function showWords(text, kind = "tail") {
     hud.words.textContent = text;
     hud.text.dataset.kind = kind;
+    hud.text.scrollLeft = kind === "tail" ? hud.text.scrollWidth : 0;
+    hud.text.toggleAttribute("data-clipped", hud.text.scrollLeft > 0);
   }
 
   // Changes the pill's state. Only the fields that are passed change. A state change cancels a pending hide.
