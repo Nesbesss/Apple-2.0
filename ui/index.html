@@ -57,6 +57,16 @@
       </div>
     </section>
 
+    <!-- Image viewer: a picture a session printed as a path. A double click on that path opens it here. -->
+    <div class="viewer" id="viewer" role="dialog" aria-modal="true" aria-label="Image" hidden>
+      <div class="viewer-head">
+        <span class="viewer-name" id="viewer-name"></span>
+        <span class="spacer"></span>
+        <button class="icon-btn" id="viewer-close" type="button" title="Close (Esc)" aria-label="Close image" data-icon="close"></button>
+      </div>
+      <div class="viewer-body"><img id="viewer-image" alt=""></div>
+    </div>
+
     <!-- Home: the landing view. Groups, live sessions, and past sessions to resume. -->
     <section class="home" id="home" aria-label="Home" hidden>
       <div class="page">

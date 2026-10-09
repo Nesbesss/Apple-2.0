@@ -2,6 +2,7 @@ mod activity;
 mod agents;
 mod commands;
 mod dictation;
+mod images;
 mod pty;
 mod sound;
 mod store;
@@ -70,6 +71,8 @@ pub fn run() {
             commands::rename_group,
             commands::delete_group,
             commands::create_sessions,
+            commands::resolve_images,
+            commands::read_image,
             commands::remove_session,
             commands::rename_session,
             commands::move_session,

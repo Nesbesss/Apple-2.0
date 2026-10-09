@@ -1,5 +1,5 @@
 use crate::{
-    activity, pty, sound, transcripts, web,
+    activity, images, pty, sound, transcripts, web,
     store::{batch_names, default_name, Group, Kind, Session, Store},
     AppState,
 };
@@ -465,6 +465,35 @@ pub fn session_status(ids: Vec<String>, state: State<'_, AppState>) -> HashMap<S
 #[tauri::command]
 pub fn play_sound(name: String) -> CmdResult<()> {
     sound::play_ui_sound(&name)
+}
+
+/// Most paths one request checks. A screen of links is far fewer.
+const MAX_IMAGE_CANDIDATES: usize = 64;
+
+/// Turns paths a terminal shows into the image files they name, or None for each that is not one. Each
+/// path is looked up against the session's folder. This runs off the UI thread, since it can walk folders.
+#[tauri::command]
+pub async fn resolve_images(cwd: String, candidates: Vec<String>) -> CmdResult<Vec<Option<String>>> {
+    if candidates.len() > MAX_IMAGE_CANDIDATES {
+        return Err("Too many paths at once".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let cwd = PathBuf::from(cwd);
+        candidates
+            .iter()
+            .map(|text| images::resolve(&cwd, text).map(|path| path.display().to_string()))
+            .collect()
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// The image at `path` as a data URL, for the viewer. Only image files are read.
+#[tauri::command]
+pub async fn read_image(path: String) -> CmdResult<String> {
+    tauri::async_runtime::spawn_blocking(move || images::data_url(std::path::Path::new(&path)))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// Writes a file dropped on the window into a cache folder and returns its path. The agent reads the

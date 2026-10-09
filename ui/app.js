@@ -24,6 +24,7 @@
     restart: stroke('<path d="M2.75 8a5.25 5.25 0 1 0 1.6-3.75M2.75 2.75v2.5h2.5"/>'),
     more: '<svg viewBox="0 0 16 16" fill="currentColor"><circle cx="3.5" cy="8" r="1.1"/><circle cx="8" cy="8" r="1.1"/><circle cx="12.5" cy="8" r="1.1"/></svg>',
     terminal: stroke('<path d="m3.5 5 3 3-3 3M8.5 11.5h4"/>'),
+    close: stroke('<path d="M4 4l8 8M12 4l-8 8"/>'),
     globe: stroke('<circle cx="8" cy="8" r="5.5"/><path d="M2.5 8h11M8 2.5c1.8 1.8 1.8 9.2 0 11M8 2.5c-1.8 1.8-1.8 9.2 0 11"/>'),
     pencil: stroke('<path d="M10.25 3.25 12.75 5.75 6 12.5H3.5v-2.5z"/>'),
     folder: stroke('<path d="M2.5 4.5h3.25l1.5 1.5h6.25v6.5h-11z"/>'),
@@ -71,6 +72,10 @@
     emptyTitle: $("#empty-title"),
     parking: $("#parking"),
     toasts: $("#toasts"),
+    viewer: $("#viewer"),
+    viewerName: $("#viewer-name"),
+    viewerImage: $("#viewer-image"),
+    viewerClose: $("#viewer-close"),
     recent: $("#recent"),
     sessionDialog: $("#new-session"),
     confirmDialog: $("#confirm"),
@@ -462,6 +467,7 @@
     term.loadAddon(fit);
     term.onData((data) => invoke("write_pty", { id: session.id, data }).catch(() => {}));
     term.attachCustomKeyEventHandler((e) => handleTermKey(session.id, e));
+    if (session.kind !== "browser") registerImageLinks(term, session);
 
     const ui = buildCardDom(session);
     const card = { id: session.id, term, fit, ...ui, opened: false, live: false, sentSize: null, scroll: null, timer: 0 };
@@ -1495,6 +1501,110 @@
     $("#colors-reset").addEventListener("click", resetColors);
   }
 
+  // ---------------------------------------------------------- image links
+
+  // A path to an image in a terminal becomes a link. A double click opens it in the viewer. Only paths that
+  // name a real image are linked, so a word that merely ends in ".png" stays plain text.
+  const IMAGE_PATH = /(?:~\/|\/|\.{1,2}\/)?[^\s"'`()<>[\]{}|,;]*?\.(?:png|jpe?g|gif|webp|bmp|svg)(?![\w.])/gi;
+  const IMAGE_RECHECK_MS = 10000; // a path that was not an image is looked up again after this long
+  const IMAGE_BATCH = 64; // matches the backend's limit per request
+  const imageCache = new Map(); // "folder\0path" -> { path: string | null, at: number }
+
+  // The text of the logical line that row y belongs to. A wrapped line is one line on screen, so its rows
+  // are joined. Each character remembers its row and cell, so a match maps back to a place on the screen.
+  function logicalLine(term, y) {
+    const buffer = term.buffer.active;
+    let top = y - 1;
+    while (top > 0 && buffer.getLine(top)?.isWrapped) top -= 1;
+    let bottom = y - 1;
+    while (bottom + 1 < buffer.length && buffer.getLine(bottom + 1)?.isWrapped) bottom += 1;
+    let text = "";
+    const cells = [];
+    for (let row = top; row <= bottom; row += 1) {
+      const line = buffer.getLine(row);
+      for (let x = 0; line && x < line.length; x += 1) {
+        const cell = line.getCell(x);
+        if (!cell || cell.getWidth() === 0) continue; // the second half of a wide character
+        const chars = cell.getChars() || " ";
+        text += chars;
+        for (let k = 0; k < chars.length; k += 1) cells.push({ row, x });
+      }
+    }
+    return { text, cells };
+  }
+
+  // Asks the backend which of these paths are images, in batches. Answers are kept, and a path that was
+  // not an image is asked about again after a while, in case the file has since appeared.
+  async function resolveImages(folder, tokens) {
+    const now = Date.now();
+    const unknown = [...new Set(tokens)].filter((token) => {
+      const hit = imageCache.get(`${folder}\0${token}`);
+      return !hit || (hit.path === null && now - hit.at > IMAGE_RECHECK_MS);
+    });
+    for (let i = 0; i < unknown.length; i += IMAGE_BATCH) {
+      const batch = unknown.slice(i, i + IMAGE_BATCH);
+      const answers = await invoke("resolve_images", { cwd: folder, candidates: batch }).catch(() => batch.map(() => null));
+      batch.forEach((token, j) => imageCache.set(`${folder}\0${token}`, { path: answers[j] ?? null, at: now }));
+    }
+    return tokens.map((token) => imageCache.get(`${folder}\0${token}`)?.path ?? null);
+  }
+
+  // xterm asks for the links of one row at a time, as the pointer moves. Only the links on that row are returned.
+  function registerImageLinks(term, session) {
+    term.registerLinkProvider({
+      provideLinks(y, callback) {
+        const line = logicalLine(term, y);
+        const matches = [...line.text.matchAll(IMAGE_PATH)];
+        if (!matches.length) { callback(undefined); return; }
+        resolveImages(session.cwd, matches.map((m) => m[0]))
+          .then((paths) => {
+            const links = [];
+            matches.forEach((m, i) => {
+              const path = paths[i];
+              const first = line.cells[m.index];
+              const last = line.cells[m.index + m[0].length - 1];
+              if (!path || !first || !last) return;
+              if (y - 1 < first.row || y - 1 > last.row) return;
+              links.push({
+                range: { start: { x: first.x + 1, y: first.row + 1 }, end: { x: last.x + 1, y: last.row + 1 } },
+                text: m[0],
+                // The first click of a double click does nothing, so the link never opens by accident.
+                activate: (event) => { if (event.detail >= 2) openImage(path, m[0]); },
+              });
+            });
+            callback(links.length ? links : undefined);
+          })
+          .catch(() => callback(undefined));
+      },
+    });
+  }
+
+  // ------------------------------------------------------------ image viewer
+
+  async function openImage(path, label) {
+    const result = await attempt("read_image", { path });
+    if (!result.ok) return;
+    el.viewerName.textContent = label.split("/").pop() || label;
+    el.viewerName.title = path;
+    el.viewerImage.src = result.value;
+    el.viewer.hidden = false;
+    el.viewerClose.focus();
+  }
+
+  function closeImage() {
+    if (el.viewer.hidden) return;
+    el.viewer.hidden = true;
+    el.viewerImage.removeAttribute("src");
+  }
+
+  function bindImageViewer() {
+    el.viewerClose.addEventListener("click", closeImage);
+    el.viewerImage.addEventListener("error", () => toast("That image could not be shown"));
+    el.viewer.addEventListener("mousedown", (e) => {
+      if (e.target === el.viewer || e.target.classList.contains("viewer-body")) closeImage();
+    });
+  }
+
   // ------------------------------------------------------------ files and images
 
   const DROP_LIMIT = 25 * 1024 * 1024; // bytes; larger files are refused rather than sent over IPC
@@ -1861,6 +1971,7 @@
 
   // Shortcuts that reach the terminal are also listed in handleTermKey, so the shell never sees them.
   function onKeyDown(e) {
+    if (e.key === "Escape" && !el.viewer.hidden) { e.preventDefault(); closeImage(); return; }
     if (activeMenu && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
       e.preventDefault();
       moveMenuFocus(e.key === "ArrowDown" ? 1 : -1);
@@ -1914,6 +2025,7 @@
       btn.addEventListener("click", () => setKind(btn.dataset.kind)));
     $("#count-less").addEventListener("click", () => setCount(state.newCount - 1));
     $("#count-more").addEventListener("click", () => setCount(state.newCount + 1));
+    bindImageViewer();
     $("#browse").addEventListener("click", browseFolder);
     el.alertsToggle.addEventListener("click", toggleAlerts);
     bindHomeAndSettings();
