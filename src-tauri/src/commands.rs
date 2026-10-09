@@ -172,8 +172,8 @@ pub struct ResumableSession {
     transcript: transcripts::Transcript,
     /// The deck session that already holds this transcript, if any.
     deck_session: Option<String>,
-    /// Claude is working on this session in another process, so resuming it here would fork it.
-    busy: bool,
+    /// A live Claude process has this session open, here or in another terminal. Resuming it would run it twice.
+    running: bool,
 }
 
 /// Past Claude and Codex sessions, newest first. Reading transcripts is file I/O, so it runs off the UI thread.
@@ -188,7 +188,7 @@ pub async fn list_transcripts(state: State<'_, AppState>) -> CmdResult<Vec<Resum
         .flat_map(|g| &g.sessions)
         .filter_map(|s| s.agent_id.clone().map(|agent| (agent, s.id.clone())))
         .collect();
-    let busy = activity::claude_busy_ids();
+    let running = activity::claude_running_ids();
     let found = tauri::async_runtime::spawn_blocking(|| transcripts::recent(transcripts::LIST_LIMIT))
         .await
         .map_err(|e| e.to_string())?;
@@ -196,7 +196,7 @@ pub async fn list_transcripts(state: State<'_, AppState>) -> CmdResult<Vec<Resum
         .into_iter()
         .map(|transcript| ResumableSession {
             deck_session: deck.get(&transcript.id).cloned(),
-            busy: transcript.kind == Kind::Claude && busy.contains(&transcript.id),
+            running: transcript.kind == Kind::Claude && running.contains(&transcript.id),
             transcript,
         })
         .collect())
@@ -228,8 +228,8 @@ pub fn resume_session(
         let group = store.groups.get(group_index).ok_or("That group no longer exists")?;
         group.sessions.iter().map(|s| s.name.clone()).collect()
     };
-    if kind == Kind::Claude && activity::claude_busy_ids().contains(&agent_id) {
-        return Err("This session is running in another terminal. Stop it there first.".into());
+    if kind == Kind::Claude && activity::claude_running_ids().contains(&agent_id) {
+        return Err("This session is open in another terminal. Close it there first.".into());
     }
     let transcript = transcripts::find(kind, &agent_id).ok_or("That session is no longer on disk")?;
 

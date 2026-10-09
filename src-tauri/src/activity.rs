@@ -9,7 +9,9 @@ use serde::Serialize;
 use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
-    fs, thread,
+    fs,
+    process::{Command, Stdio},
+    thread,
     time::{Duration, SystemTime},
 };
 use tauri::{AppHandle, Emitter, Manager};
@@ -24,6 +26,36 @@ const CODEX_DISCOVERY_EVERY: u64 = 4;
 pub struct ActivityEvent {
     pub id: String,
     pub working: bool,
+}
+
+/// Session ids of Claude processes that are still alive, from the status files in ~/.claude/sessions.
+/// A file can outlive a crashed process, so the pid in it must answer too. A session that is open in
+/// another terminal must not be resumed here, or two processes would write one transcript.
+pub fn claude_running_ids() -> HashSet<String> {
+    let Some(dir) = dirs::home_dir().map(|h| h.join(".claude/sessions")) else {
+        return HashSet::new();
+    };
+    fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+        .filter_map(|path| serde_json::from_slice::<Value>(&fs::read(path).ok()?).ok())
+        .filter(|status| status["pid"].as_i64().is_some_and(pid_alive))
+        .filter_map(|status| status["sessionId"].as_str().map(str::to_owned))
+        .collect()
+}
+
+/// Whether a process exists. `kill -0` sends no signal, it only asks.
+fn pid_alive(pid: i64) -> bool {
+    pid > 0
+        && Command::new("/bin/kill")
+            .args(["-0", &pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
 }
 
 /// Session ids that Claude reports as busy, from the status files in ~/.claude/sessions.
@@ -163,4 +195,16 @@ fn resolve_codex_ids(app: &AppHandle, sessions: &[Session], pending: Vec<(String
     let snapshot = store.clone();
     drop(store);
     let _ = app.emit("store-changed", snapshot);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pid_alive;
+
+    #[test]
+    fn pid_alive_sees_this_process_and_not_a_missing_one() {
+        assert!(pid_alive(i64::from(std::process::id())));
+        assert!(!pid_alive(i64::from(i32::MAX)));
+        assert!(!pid_alive(0));
+    }
 }

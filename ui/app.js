@@ -1295,8 +1295,8 @@
     let action;
     if (item.deck_session) {
       action = h("button", { class: "btn btn-outline", type: "button", onclick: () => focusSession(item.deck_session) }, "Open");
-    } else if (item.busy) {
-      action = h("button", { class: "btn btn-outline", type: "button", disabled: true, title: "It is running in another terminal. Stop it there first." }, "In use");
+    } else if (item.running) {
+      action = h("button", { class: "btn btn-outline", type: "button", disabled: true, title: "It is open in another terminal. Close it there first." }, "In use");
     } else {
       action = h("button", { class: "btn btn-primary", type: "button", onclick: (e) => resumeTranscript(item, e.currentTarget) }, "Resume");
     }
