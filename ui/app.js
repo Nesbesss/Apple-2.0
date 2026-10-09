@@ -738,6 +738,8 @@
     // Park cards that leave the screen; their terminals (and scrollback) live on.
     cards.forEach((card) => {
       if (!shownIds.has(card.id) && card.root.parentNode === el.grid) {
+        // Parking hides the card, which cancels its entrance without firing animationend. Clear the class here.
+        card.root.classList.remove("arrive");
         snapshotScroll(card);
         el.parking.append(card.root);
       }
