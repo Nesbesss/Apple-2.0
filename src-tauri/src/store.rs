@@ -120,6 +120,43 @@ impl Store {
         self.groups[to].sessions.push(session);
         Ok(())
     }
+
+    /// Puts session `id` into group `to`, before the session now at `index`, or last when `index` is past the
+    /// end. Within one group the index refers to the list as it was before the move. Its agent keeps running.
+    pub fn place_session(&mut self, id: &str, to: usize, index: usize) -> Result<(), String> {
+        if to >= self.groups.len() {
+            return Err("That group no longer exists".into());
+        }
+        let from = self.group_of(id).ok_or("That session no longer exists")?;
+        let position = self.groups[from].sessions.iter().position(|s| s.id == id).ok_or("That session no longer exists")?;
+        let mut index = index.min(self.groups[to].sessions.len());
+        if from == to {
+            if index == position || index == position + 1 {
+                return Ok(()); // dropped where it already is
+            }
+            if position < index {
+                index -= 1; // the session leaves its place before the index is used
+            }
+        }
+        let session = self.groups[from].sessions.remove(position);
+        self.groups[to].sessions.insert(index, session);
+        Ok(())
+    }
+
+    /// Moves group `from` so that it sits before the group now at `index`, or last when `index` is past the
+    /// end. The index refers to the list as it was before the move.
+    pub fn move_group(&mut self, from: usize, index: usize) -> Result<(), String> {
+        if from >= self.groups.len() {
+            return Err("That group no longer exists".into());
+        }
+        if index == from || index == from + 1 {
+            return Ok(());
+        }
+        let group = self.groups.remove(from);
+        let index = if from < index { index - 1 } else { index };
+        self.groups.insert(index.min(self.groups.len()), group);
+        Ok(())
+    }
 }
 
 pub const MAX_NAME_CHARS: usize = 80;
@@ -155,6 +192,124 @@ pub fn batch_names(base: &str, taken: &[&str], count: usize) -> Vec<String> {
         names.push(default_name(base, &in_use));
     }
     names
+}
+
+/// Names for sessions a person did not name: short and easy to say, so the sessions tell apart at a glance.
+const FRIENDLY_NAMES: &[&str] = &[
+    "jerry", "otis", "mabel", "pip", "ruby", "milo", "hazel", "theo", "nora", "biscuit", "olive", "gus", "wren",
+    "sully", "juniper", "felix", "rosie", "ziggy", "maple", "kit", "bruno", "luna", "clem", "pearl", "moss", "rory",
+    "tilly", "wally", "dot", "fern", "ned", "ollie", "sage", "tuck", "mango", "pickle", "birdie", "rex", "hank", "lulu",
+];
+
+/// A friendly name that is not in use, starting at `pick` and walking the list. When every name is taken,
+/// the picked name is numbered the way folder names are.
+pub fn random_name(taken: &[&str], pick: usize) -> String {
+    let len = FRIENDLY_NAMES.len();
+    (0..len)
+        .map(|offset| FRIENDLY_NAMES[(pick + offset) % len])
+        .find(|name| !taken.contains(name))
+        .map(str::to_string)
+        .unwrap_or_else(|| default_name(FRIENDLY_NAMES[pick % len], taken))
+}
+
+/// Names for `count` sessions opened together without a typed name. Each one avoids the names before it.
+pub fn random_names(taken: &[&str], count: usize, seed: usize) -> Vec<String> {
+    let mut names: Vec<String> = Vec::with_capacity(count);
+    for i in 0..count {
+        let in_use: Vec<&str> = taken.iter().copied().chain(names.iter().map(String::as_str)).collect();
+        names.push(random_name(&in_use, seed.wrapping_add(i * 7)));
+    }
+    names
+}
+
+#[cfg(test)]
+mod order_tests {
+    use super::*;
+
+    fn session(id: &str) -> Session {
+        Session { id: id.into(), kind: Kind::Claude, name: id.into(), cwd: PathBuf::from("/tmp"), agent_id: None, url: None }
+    }
+
+    /// Group A holds a1 and a2, group B holds b1, group C is empty.
+    fn store() -> Store {
+        Store {
+            groups: vec![
+                Group { name: "A".into(), sessions: vec![session("a1"), session("a2")] },
+                Group { name: "B".into(), sessions: vec![session("b1")] },
+                Group { name: "C".into(), sessions: vec![] },
+            ],
+        }
+    }
+
+    fn sessions(store: &Store, group: usize) -> Vec<&str> {
+        store.groups[group].sessions.iter().map(|s| s.id.as_str()).collect()
+    }
+
+    fn groups(store: &Store) -> Vec<&str> {
+        store.groups.iter().map(|g| g.name.as_str()).collect()
+    }
+
+    #[test]
+    fn a_session_moves_before_the_chosen_position_within_its_group() {
+        let mut store = store();
+        store.place_session("a2", 0, 0).unwrap();
+        assert_eq!(sessions(&store, 0), vec!["a2", "a1"]);
+        store.place_session("a2", 0, 2).unwrap();
+        assert_eq!(sessions(&store, 0), vec!["a1", "a2"]);
+    }
+
+    #[test]
+    fn dropping_a_session_where_it_already_is_changes_nothing() {
+        let mut store = store();
+        store.place_session("a1", 0, 0).unwrap();
+        store.place_session("a1", 0, 1).unwrap();
+        assert_eq!(sessions(&store, 0), vec!["a1", "a2"]);
+    }
+
+    #[test]
+    fn a_session_can_move_into_another_group_at_a_position() {
+        let mut store = store();
+        store.place_session("a1", 1, 0).unwrap();
+        assert_eq!(sessions(&store, 0), vec!["a2"]);
+        assert_eq!(sessions(&store, 1), vec!["a1", "b1"]);
+        store.place_session("b1", 2, 99).unwrap();
+        assert_eq!(sessions(&store, 2), vec!["b1"], "past the end means last");
+    }
+
+    #[test]
+    fn placing_into_a_missing_group_is_refused() {
+        let mut store = store();
+        assert!(store.place_session("a1", 9, 0).is_err());
+        assert!(store.place_session("missing", 0, 0).is_err());
+        assert_eq!(sessions(&store, 0), vec!["a1", "a2"]);
+    }
+
+    #[test]
+    fn a_group_moves_before_the_chosen_position() {
+        let mut store = store();
+        store.move_group(0, 3).unwrap();
+        assert_eq!(groups(&store), vec!["B", "C", "A"], "to the end");
+        store.move_group(2, 0).unwrap();
+        assert_eq!(groups(&store), vec!["A", "B", "C"], "to the front");
+        store.move_group(1, 2).unwrap();
+        assert_eq!(groups(&store), vec!["A", "B", "C"], "onto its own place changes nothing");
+        assert!(store.move_group(7, 0).is_err());
+    }
+
+    #[test]
+    fn random_names_skip_names_in_use_and_stay_unique_in_a_batch() {
+        assert_eq!(random_name(&[], 0), FRIENDLY_NAMES[0]);
+        assert_eq!(random_name(&[FRIENDLY_NAMES[0]], 0), FRIENDLY_NAMES[1]);
+        let names = random_names(&[], 6, 5);
+        let unique: std::collections::HashSet<&String> = names.iter().collect();
+        assert_eq!(unique.len(), 6);
+    }
+
+    #[test]
+    fn when_every_friendly_name_is_taken_the_name_is_numbered() {
+        let all: Vec<&str> = FRIENDLY_NAMES.to_vec();
+        assert_eq!(random_name(&all, 0), format!("{} 2", FRIENDLY_NAMES[0]));
+    }
 }
 
 #[cfg(test)]

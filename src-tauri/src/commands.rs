@@ -1,6 +1,6 @@
 use crate::{
     activity, images, pty, sound, transcripts, web,
-    store::{batch_names, default_name, Group, Kind, Session, Store},
+    store::{batch_names, default_name, random_names, Group, Kind, Session, Store},
     AppState,
 };
 use serde::Serialize;
@@ -169,13 +169,22 @@ pub fn create_sessions(
     };
 
     // One session keeps a typed name exactly. Several are numbered from the base, around the names in use.
+    // Claude and Codex sessions opened without a name get a friendly one, which is also what Claude shows
+    // for the session, since the name is passed to it on launch.
     let names = if count == 1 && !typed.is_empty() {
         vec![typed.clone()]
     } else {
         let store = state.store.lock().unwrap();
         let group = store.groups.get(group_index).ok_or("That group no longer exists")?;
         let taken: Vec<&str> = group.sessions.iter().map(|s| s.name.as_str()).collect();
-        batch_names(&base, &taken, count)
+        if typed.is_empty() && matches!(kind, Kind::Claude | Kind::Codex) {
+            let seed = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.subsec_nanos() as usize);
+            random_names(&taken, count, seed)
+        } else {
+            batch_names(&base, &taken, count)
+        }
     };
 
     let mut created = Vec::with_capacity(count);
@@ -328,6 +337,18 @@ pub fn rename_session(id: String, name: String, state: State<'_, AppState>) -> C
 #[tauri::command]
 pub fn move_session(id: String, group_index: usize, state: State<'_, AppState>) -> CmdResult<Store> {
     edit_store(&state, |store| store.move_session(&id, group_index))
+}
+
+/// Puts a session into group `group`, before the session at `index`. Used by drag and drop in the sidebar.
+#[tauri::command]
+pub fn place_session(id: String, group: usize, index: usize, state: State<'_, AppState>) -> CmdResult<Store> {
+    edit_store(&state, |store| store.place_session(&id, group, index))
+}
+
+/// Moves group `from` to sit before the group at `index`. Used by drag and drop in the sidebar.
+#[tauri::command]
+pub fn move_group(from: usize, index: usize, state: State<'_, AppState>) -> CmdResult<Store> {
+    edit_store(&state, |store| store.move_group(from, index))
 }
 
 /// Puts text on the clipboard. Goes through pbcopy because WKWebView clipboard access

@@ -332,6 +332,13 @@ kbd {
 .session-row:hover { background: var(--hover); color: var(--text); }
 .session-row.focused { background: var(--selected); color: var(--text); }
 .session-row.dragging { opacity: 0.45; }
+.group.dragging > .group-row { opacity: 0.45; }
+
+/* Where a dragged session or group will land: a line above or below the row or header under the pointer. */
+.session-row.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.session-row.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+.group-row.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.group-row.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
 .session-row .logo { width: 12px; height: 12px; }
 .session-name {
   flex: 1;
@@ -472,7 +479,11 @@ kbd {
   font-size: 11.5px;
 }
 .card-status {
-  flex: none;
+  /* The status can shrink when a card is narrow, so the header buttons keep their room. */
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   display: inline-flex;
   align-items: center;
   height: 20px;
@@ -508,6 +519,12 @@ kbd {
 }
 
 .card-head .btn { height: 24px; padding: 0 8px; gap: 6px; font-size: 12px; }
+.card-head .btn, .card-head .icon-btn { flex: none; }
+/* In a narrow card the path gives way first, so the status and its token count stay readable. */
+.card-meta { flex: 0 100 auto; }
+.status-sep { white-space: pre; }
+.card.narrow .status-time, .card.narrow .status-sep.time, .card.narrow .status-unit { display: none; }
+.card.narrow .card-meta { display: none; }
 .card-head .btn svg { width: 12px; height: 12px; }
 
 .card-body { position: relative; flex: 1; min-height: 0; background: var(--card); }

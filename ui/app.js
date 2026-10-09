@@ -50,6 +50,8 @@
     workingSince: new Map(), // id -> Date.now() when the current "working" stretch began
     done: new Set(), // ids whose work finished while the user was not looking
     dragId: null, // session id being dragged in the sidebar
+    dragGroup: null, // group index being dragged in the sidebar
+    tokens: {}, // session id -> tokens it has used, from the last count (see refreshTokens)
     newKind: "claude",
     newCount: 1, // how many sessions the New session dialog opens at once
     view: "home", // "home" | "group" | "settings"
@@ -495,6 +497,8 @@
     const ui = buildCardDom(session);
     const card = { id: session.id, term, fit, ...ui, opened: false, live: false, sentSize: null, scroll: null, timer: 0 };
     new ResizeObserver(() => {
+      // A narrow card has no room for the elapsed time next to the token count, so it drops first.
+      card.root.classList.toggle("narrow", card.root.clientWidth < NARROW_CARD_PX);
       clearTimeout(card.timer);
       card.timer = setTimeout(() => fitCard(card), 50);
     }).observe(card.body);
@@ -569,9 +573,47 @@
     card.expand.setAttribute("aria-label", card.expand.title);
   }
 
-  function statusText(id, st) {
+  // Cards narrower than this drop the elapsed time from the status, so the token count still fits.
+  const NARROW_CARD_PX = 380;
+
+  // The status pill: "Working · 10s · 42k tok". Reads only cached values, so it is cheap to run every second.
+  function renderStatus(card, id, st) {
     const since = state.workingSince.get(id);
-    return st === "working" && since ? `${STATE_WORD[st]} · ${formatElapsed(Date.now() - since)}` : STATE_WORD[st];
+    const tokens = state.tokens[id];
+    // Each piece is a flex item, and flex items drop the spaces at their edges, so the separators are items too.
+    const pieces = [h("span", {}, STATE_WORD[st])];
+    if (st === "working" && since) {
+      pieces.push(h("span", { class: "status-sep time" }, " · "), h("span", { class: "status-time" }, formatElapsed(Date.now() - since)));
+    }
+    if (tokens) {
+      pieces.push(h("span", { class: "status-sep" }, " · "), h("span", { class: "status-tokens" }, formatTokens(tokens)), h("span", { class: "status-unit" }, " tok"));
+    }
+    card.status.replaceChildren(...pieces);
+  }
+
+  // Token counts for the cards on screen, read by the backend every few seconds. Only Claude and Codex
+  // sessions have a transcript to count.
+  const TOKEN_REFRESH_MS = 8000;
+  let tokensBusy = false;
+
+  async function refreshTokens() {
+    if (tokensBusy || document.hidden) return;
+    const requests = [...cards.values()]
+      .filter((card) => card.root.parentNode === el.grid)
+      .map((card) => findSession(card.id))
+      .filter((s) => s && s.agent_id && (s.kind === "claude" || s.kind === "codex"))
+      .map((s) => ({ id: s.id, kind: s.kind, agentId: s.agent_id }));
+    if (!requests.length) return;
+    tokensBusy = true;
+    try {
+      const counts = await invoke("session_tokens", { requests });
+      for (const { id, tokens } of counts) state.tokens[id] = tokens;
+      requests.forEach((request) => updateCardStatus(request.id));
+    } catch {
+      // Keep the last counts. The header shows the older number until the next read succeeds.
+    } finally {
+      tokensBusy = false;
+    }
   }
 
   function updateCardStatus(id) {
@@ -580,7 +622,8 @@
     const st = stateOf(id);
     card.dot.dataset.state = st;
     card.status.dataset.state = st;
-    card.status.textContent = statusText(id, st);
+    renderStatus(card, id, st);
+    card.status.title = state.tokens[id] ? "Tokens this session has used: input and output, with cache reads left out." : "";
     card.root.classList.toggle("is-working", st === "working");
     card.restart.hidden = st !== "exited";
   }
@@ -846,6 +889,9 @@
       const header = h("div", {
         class: `group-row${index === state.selected && state.view === "group" ? " selected" : ""}`,
         role: "button",
+        draggable: renaming ? null : "true", // a group being renamed is not dragged
+        ondragstart: (e) => onGroupDragStart(e, index),
+        ondragend: () => endDrag(),
         onclick: () => selectGroup(index),
         ondblclick: () => startRename(index),
         oncontextmenu: (e) => { e.preventDefault(); openGroupMenu(e, index); },
@@ -859,7 +905,7 @@
         ondragover: (e) => onGroupDragOver(e, index),
         ondragleave: (e) => onGroupDragLeave(e),
         ondrop: (e) => onGroupDrop(e, index),
-      }, header, group.sessions.length ? h("div", { class: "session-list" }, group.sessions.map(sessionRow)) : null);
+      }, header, group.sessions.length ? h("div", { class: "session-list" }, group.sessions.map((session, i) => sessionRow(session, index, i))) : null);
     }));
 
     const field = el.groupList.querySelector(".group-rename");
@@ -871,7 +917,7 @@
     updateIndicators();
   }
 
-  function sessionRow(session) {
+  function sessionRow(session, groupIndex, sessionIndex) {
     const id = session.id;
     return h("div", {
       class: `session-row${state.focusedId === id ? " focused" : ""}`,
@@ -884,6 +930,9 @@
       oncontextmenu: (e) => { e.preventDefault(); openSessionMenu(id, e.clientX, e.clientY); },
       ondragstart: (e) => onSessionDragStart(e, id),
       ondragend: () => endDrag(),
+      ondragover: (e) => onRowDragOver(e),
+      ondrop: (e) => onRowDrop(e, groupIndex, sessionIndex),
+      ondragleave: (e) => { if (!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.classList.remove("drop-before", "drop-after"); },
     },
       kindMark(session.kind),
       h("span", { class: "session-name" }, session.name),
@@ -901,10 +950,43 @@
 
   function endDrag() {
     state.dragId = null;
-    el.groupList.querySelectorAll(".dragging, .drop-target").forEach((node) => node.classList.remove("dragging", "drop-target"));
+    state.dragGroup = null;
+    el.groupList.querySelectorAll(".dragging, .drop-target, .drop-before, .drop-after").forEach((node) =>
+      node.classList.remove("dragging", "drop-target", "drop-before", "drop-after"));
+  }
+
+  // Dragging a group header reorders the groups. The line shows above or below the header.
+  function onGroupDragStart(e, index) {
+    state.dragGroup = index;
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", groups()[index].name); // WebKit will not start a drag without some data
+    e.currentTarget.closest(".group").classList.add("dragging");
+  }
+
+  // Which side of a node the pointer is on: above or below its midpoint. The drop line goes there.
+  function dropSide(node, clientY) {
+    const rect = node.getBoundingClientRect();
+    return clientY < rect.top + rect.height / 2 ? "before" : "after";
+  }
+
+  // Shows the drop line on one node and clears it everywhere else.
+  function markDrop(node, side) {
+    el.groupList.querySelectorAll(".drop-before, .drop-after").forEach((other) => {
+      if (other !== node) other.classList.remove("drop-before", "drop-after");
+    });
+    node.classList.toggle("drop-before", side === "before");
+    node.classList.toggle("drop-after", side === "after");
   }
 
   function onGroupDragOver(e, index) {
+    if (state.dragGroup !== null) {
+      if (state.dragGroup === index) return; // a group cannot land on itself
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      const header = e.currentTarget.querySelector(":scope > .group-row");
+      markDrop(header, dropSide(header, e.clientY));
+      return;
+    }
     const id = state.dragId;
     if (!id || groups()[index].sessions.some((s) => s.id === id)) return; // not a drop onto its own group
     e.preventDefault();
@@ -918,9 +1000,68 @@
 
   function onGroupDrop(e, index) {
     e.preventDefault();
+    if (state.dragGroup !== null) {
+      const header = e.currentTarget.querySelector(":scope > .group-row");
+      const from = state.dragGroup;
+      const target = header.classList.contains("drop-after") ? index + 1 : index;
+      endDrag();
+      moveGroup(from, target);
+      return;
+    }
     const id = state.dragId;
     endDrag();
     if (id) moveSession(id, index);
+  }
+
+  // A session row takes drops of sessions and places the dragged one above or below it. Group drags pass
+  // through to the group, so their drop line lands on the group header.
+  function onRowDragOver(e) {
+    if (state.dragId === null) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = "move";
+    markDrop(e.currentTarget, dropSide(e.currentTarget, e.clientY));
+  }
+
+  function onRowDrop(e, groupIndex, sessionIndex) {
+    if (state.dragId === null) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const after = e.currentTarget.classList.contains("drop-after");
+    const id = state.dragId;
+    endDrag();
+    placeSession(id, groupIndex, sessionIndex + (after ? 1 : 0));
+  }
+
+  // Puts a session before the session at `index` in group `group`. A drop that changes nothing sends nothing.
+  async function placeSession(id, group, index) {
+    const from = groups().findIndex((g) => g.sessions.some((s) => s.id === id));
+    if (from < 0) return;
+    const position = groups()[from].sessions.findIndex((s) => s.id === id);
+    if (from === group && (index === position || index === position + 1)) return;
+    const result = await attempt("place_session", { id, group, index });
+    if (result.ok) applyStore(result.value);
+  }
+
+  // Moves group `from` before the group at `index`. The selected group keeps being the same group, and the
+  // stored selection follows it.
+  async function moveGroup(from, index) {
+    if (from === index || from + 1 === index) return;
+    const result = await attempt("move_group", { from, index });
+    if (!result.ok) return;
+    const to = index > from ? index - 1 : index;
+    state.selected = shiftedIndex(state.selected, from, to);
+    state.renaming = null;
+    stored.set("selectedGroup", String(state.selected));
+    applyStore(result.value);
+  }
+
+  // Where group `i` ends up once group `from` has moved to `to`.
+  function shiftedIndex(i, from, to) {
+    if (i === from) return to;
+    if (from < to && i > from && i <= to) return i - 1;
+    if (to < from && i >= to && i < from) return i + 1;
+    return i;
   }
 
   function renderToolbar() {
@@ -2584,6 +2725,8 @@
     startUsage();
     // Keeps "Working · 1m 04s" counting up. Only working cards change, so this is cheap.
     setInterval(() => state.workingSince.forEach((_, id) => updateCardStatus(id)), 1000);
+    setInterval(refreshTokens, TOKEN_REFRESH_MS);
+    refreshTokens();
 
     let loaded = await attempt("load_store");
     if (!loaded.ok) return;

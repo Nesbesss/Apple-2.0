@@ -8,6 +8,7 @@ mod images;
 mod pty;
 mod sound;
 mod store;
+mod session_tokens;
 mod transcripts;
 mod usage;
 mod web;
@@ -56,6 +57,7 @@ pub fn run() {
                 dictation: Default::default(),
             });
             app.manage(usage::UsageState::default());
+            app.manage(session_tokens::TokenState::default());
             if let Err(err) = dictation::warm(app.handle(), &app.state::<AppState>()) {
                 eprintln!("dictation: {err}");
             }
@@ -90,6 +92,8 @@ pub fn run() {
             commands::remove_session,
             commands::rename_session,
             commands::move_session,
+            commands::place_session,
+            commands::move_group,
             commands::reveal_session_folder,
             commands::copy_text,
             commands::notify,
@@ -106,6 +110,7 @@ pub fn run() {
             commands::list_transcripts,
             commands::resume_session,
             usage::usage_snapshot,
+            session_tokens::session_tokens,
             claude_limits::claude_limits,
             claude_limits::connect_claude_limits,
             claude_limits::disconnect_claude_limits,

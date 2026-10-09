@@ -113,7 +113,9 @@ impl Meter {
         self.totals(now)
     }
 
-    fn read_new_lines(&mut self, path: &Path) {
+    /// Reads what was appended to one transcript since the last read. Used for the usage bar's windows and for
+    /// one session's total, so both count a message the same way.
+    pub fn read_new_lines(&mut self, path: &Path) {
         let Ok(mut file) = File::open(path) else { return };
         let Ok(len) = file.metadata().map(|m| m.len()) else { return };
         let mut lines = Vec::new();
@@ -179,6 +181,12 @@ impl Meter {
         entry.cache_creation = entry.cache_creation.max(seen.cache_creation);
         entry.output = entry.output.max(seen.output);
         entry.cache_read = entry.cache_read.max(seen.cache_read);
+    }
+
+    /// Every message read so far, counted once each: input, cache writes and output. Cache reads are left out,
+    /// as they are in the usage bar.
+    pub fn billed_tokens(&self) -> u64 {
+        self.messages.values().map(|m| m.input + m.cache_creation + m.output).sum()
     }
 
     fn totals(&self, now: u64) -> Claude {
