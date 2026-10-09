@@ -1667,6 +1667,10 @@ kbd {
 }
 #ping-choices .ping-option .choice[aria-checked="true"] { color: var(--text); }
 #ping-choices .ping-option .choice[aria-checked="true"]::before { background: var(--accent); box-shadow: none; }
+/* These items sit on the edge of a panel that clips overflow, so their focus ring is drawn inside it. */
+.row-list > .row-button:focus-visible,
+#ping-choices .choice:focus-visible,
+#ping-choices .ping-preview:focus-visible { outline-offset: -2px; }
 
 /* The estimate without the status line: closed unless the user opens it or a limit is set. */
 .estimate { margin-top: 14px; padding: 0 14px; border: 1px solid var(--line); border-radius: 10px; }
