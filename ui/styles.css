@@ -868,6 +868,33 @@ kbd {
 .setting-label small { color: var(--muted); font-size: 12px; }
 .setting-control { display: flex; align-items: center; gap: 12px; flex: none; }
 .setting-footer { display: flex; justify-content: flex-end; margin-top: 14px; }
+/* A label over its choices, for lists too wide to sit beside the label. */
+.setting-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 8px 0 14px;
+  border-bottom: 1px solid var(--line);
+}
+/* A done-ping choice with a small arrow beside it that plays the sound without choosing it. */
+.ping-option { display: inline-flex; align-items: center; gap: 2px; }
+.ping-preview {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 32px;
+  border-radius: 6px;
+  color: var(--muted);
+  transition: color var(--ease), background var(--ease);
+}
+.ping-preview:hover { color: var(--text); background: var(--hover); }
+.ping-preview::before {
+  content: "";
+  margin-left: 2px;
+  border-style: solid;
+  border-width: 4px 0 4px 6px;
+  border-color: transparent transparent transparent currentColor;
+}
 .swatches { display: flex; gap: 8px; }
 .swatch {
   width: 22px;

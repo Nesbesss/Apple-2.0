@@ -99,6 +99,8 @@ pub fn run() {
             commands::notify,
             commands::set_alerts,
             commands::play_sound,
+            commands::set_done_ping,
+            commands::preview_done_ping,
             commands::save_dropped_file,
             commands::quit_app,
             commands::ensure_session,

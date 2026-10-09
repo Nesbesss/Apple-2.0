@@ -490,6 +490,18 @@ pub fn play_sound(name: String) -> CmdResult<()> {
     sound::play_ui_sound(&name)
 }
 
+/// Saves the sound a finished agent plays. The UI sends it on launch and whenever it changes.
+#[tauri::command]
+pub fn set_done_ping(name: String) -> CmdResult<()> {
+    sound::set_done_ping(&name)
+}
+
+/// Plays one done ping so the user can hear it in settings.
+#[tauri::command]
+pub fn preview_done_ping(name: String) -> CmdResult<()> {
+    sound::preview_done_ping(&name)
+}
+
 /// Most paths one request checks. A screen of links is far fewer.
 const MAX_IMAGE_CANDIDATES: usize = 64;
 
