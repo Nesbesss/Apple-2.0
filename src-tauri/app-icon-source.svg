@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2a2a2f"/>
+      <stop offset="1" stop-color="#131315"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#b3c4ff"/>
+      <stop offset="1" stop-color="#6d8dff"/>
+    </linearGradient>
+  </defs>
+  <!-- Body: the macOS icon grid leaves 100px of clear margin around an 824px tile. -->
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#tile)"/>
+  <rect x="101" y="101" width="822" height="822" rx="185" fill="none" stroke="#ffffff" stroke-opacity="0.07" stroke-width="2"/>
+  <!-- The N: two stems and a diagonal, one stroke, so the joins stay clean. -->
+  <path d="M396 706V318L628 706V318" fill="none" stroke="url(#mark)" stroke-width="86" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Status dot: the same green as a finished session. -->
+  <circle cx="740" cy="298" r="37" fill="#4ac26b"/>
+</svg>

@@ -1,6 +1,6 @@
-# Agent rules for Session Deck
+# Agent rules for Nesa
 
-Session Deck is a Tauri app. The Rust backend is in `src-tauri/`, and the frontend is static HTML/CSS/JS in `ui/`.
+Nesa (formerly Session Deck) is a Tauri app. The Rust backend is in `src-tauri/`, and the frontend is static HTML/CSS/JS in `ui/`.
 
 ## Workflow
 - Do not edit `/Users/nesbes/nesa` directly. It is the integration folder (`main`).

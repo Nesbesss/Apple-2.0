@@ -259,7 +259,7 @@ pub fn remove_session(id: String, state: State<'_, AppState>) -> CmdResult<Store
     Ok(store.clone())
 }
 
-/// Shows the session's folder in Finder. Only folders the deck already knows about can be shown.
+/// Shows the session's folder in Finder. Only folders Nesa already knows about can be shown.
 #[tauri::command]
 pub fn reveal_session_folder(id: String, state: State<'_, AppState>) -> CmdResult<()> {
     let session = find_session(&state, &id)?;

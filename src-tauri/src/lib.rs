@@ -91,7 +91,7 @@ pub fn run() {
             dictation::dictation_cancel,
         ])
         .build(tauri::generate_context!())
-        .expect("error while building Session Deck")
+        .expect("error while building Nesa")
         .run(|app, event| {
             // Cmd+Q and the app menu end up here, not at the window.
             if let RunEvent::ExitRequested { api, .. } = event {

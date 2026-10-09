@@ -28,7 +28,6 @@
     folder: stroke('<path d="M2.5 4.5h3.25l1.5 1.5h6.25v6.5h-11z"/>'),
     copy: stroke('<rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M3.5 10.5v-6a1 1 0 0 1 1-1h6"/>'),
     stop: '<svg viewBox="0 0 16 16" fill="currentColor"><rect x="4" y="4" width="8" height="8" rx="1.5"/></svg>',
-    deck: stroke('<rect x="5" y="2.5" width="8.5" height="7" rx="1.5"/><path d="M3 6v6.5a1 1 0 0 0 1 1h7.5"/>'),
     home: stroke('<path d="M2.75 7.5 8 3.25l5.25 4.25V13a.75.75 0 0 1-.75.75H9.5V10h-3v3.75H3.5A.75.75 0 0 1 2.75 13z"/>'),
     gear: stroke('<circle cx="8" cy="8" r="2"/><path d="M8 1.75v1.7M8 12.55v1.7M1.75 8h1.7M12.55 8h1.7M3.55 3.55l1.2 1.2M11.25 11.25l1.2 1.2M3.55 12.45l1.2-1.2M11.25 4.75l1.2-1.2"/>'),
   };
@@ -53,6 +52,7 @@
     resumeFilter: "all", // "all" | "claude" | "codex"
     resumeQuery: "",
     resumeGroup: 0, // index of the group a resumed session is filed under
+    arriving: false, // the next grid render plays the entrance animation on every card
   };
   const cards = new Map(); // id -> card entry (DOM, terminal, size bookkeeping)
   const pendingData = new Map(); // id -> bytes that arrived before the card existed
@@ -225,10 +225,20 @@
   const icon = (name) => h("span", { class: "icon", html: ICONS[name] });
   const errorText = (err) => (typeof err === "string" ? err : (err && err.message) || String(err));
 
+  // Restarts a one-shot CSS animation by re-adding its class (the reflow makes the browser notice).
+  function replayClass(node, name) {
+    node.classList.remove(name);
+    void node.offsetWidth;
+    node.classList.add(name);
+  }
+
   function toast(message, kind = "error") {
     const node = h("div", { class: `toast ${kind}` }, errorText(message));
     el.toasts.append(node);
-    setTimeout(() => node.remove(), 4500);
+    setTimeout(() => {
+      node.classList.add("leaving");
+      setTimeout(() => node.remove(), 200); // matches the toast-out animation
+    }, 4300);
   }
 
   // Runs a command; failures become a toast instead of an exception.
@@ -313,9 +323,16 @@
     if (working) state.done.delete(id);
     else if (wasWorking && !(document.hasFocus() && isOnScreen(id))) {
       state.done.add(id);
+      flashRow(id);
       announceDone(id);
     }
     setStatus(id, { working, running: true });
+  }
+
+  // A finished session glows once in the sidebar, so it is easy to spot among the others.
+  function flashRow(id) {
+    const row = el.groupList.querySelector(`.session-row[data-id="${id}"]`);
+    if (row) replayClass(row, "flash");
   }
 
   // A system notification, shown only while the app is in the background.
@@ -461,7 +478,13 @@
     const head = h("header", { class: "card-head", ondblclick: (e) => { if (!e.target.closest("button")) toggleMaximize(session.id); } },
       dot, logo(session.kind), name, meta, status, h("span", { class: "spacer" }), restart, expand, more);
     const body = h("div", { class: "card-body" });
-    const root = h("article", { class: "card", "data-id": session.id, onmousedown: () => focusCard(session.id) }, head, body);
+    // The entrance animation is one-shot: drop its class once it ends, so moving the card later does not replay it.
+    const root = h("article", {
+      class: "card",
+      "data-id": session.id,
+      onmousedown: () => focusCard(session.id),
+      onanimationend: (e) => { if (e.target === e.currentTarget) e.currentTarget.classList.remove("arrive"); },
+    }, head, body);
     return { root, body, dot, name, meta, status, restart, expand };
   }
 
@@ -668,10 +691,12 @@
       state.selected = index;
       state.maximizedId = null;
       state.renaming = null;
+      state.arriving = true;
       stored.set("selectedGroup", String(index));
     } else if (state.maximizedId) {
       state.maximizedId = id;
     }
+    if (state.view !== "group") state.arriving = true; // coming from Home or Settings
     state.view = "group";
     state.focusedId = id;
     renderAll();
@@ -831,6 +856,11 @@
     const group = currentGroup();
     const n = group ? group.sessions.length : 0;
     el.title.textContent = group ? group.name : "";
+    // Only a group switch slides the title in. Renames and new sessions re-render it quietly.
+    if (el.title.dataset.index !== String(state.selected)) {
+      el.title.dataset.index = String(state.selected);
+      replayClass(el.title, "swap");
+    }
     el.count.textContent = n ? `${n} ${n === 1 ? "session" : "sessions"}` : "";
     updateSummary();
   }
@@ -854,6 +884,8 @@
     // Park cards that leave the screen; their terminals (and scrollback) live on.
     cards.forEach((card) => {
       if (!shownIds.has(card.id) && card.root.parentNode === el.grid) {
+        // Parking hides the card, which cancels its entrance without firing animationend. Clear the class here.
+        card.root.classList.remove("arrive");
         snapshotScroll(card);
         el.parking.append(card.root);
       }
@@ -862,10 +894,18 @@
     const cols = gridColumns(shown.length);
     el.grid.style.setProperty("--rows", Math.ceil(shown.length / cols));
     const tail = shown.length % cols;
+    const arriving = state.arriving;
+    state.arriving = false;
     const entries = shown.map((session, i) => {
+      const fresh = !cards.has(session.id);
       const card = cards.get(session.id) || createCard(session);
       updateCardInfo(card, session);
       updateCardStatus(session.id);
+      // A new card, or every card after a group switch, arrives one after another.
+      if (fresh || arriving) {
+        card.root.style.setProperty("--i", i);
+        card.root.classList.add("arrive");
+      }
       // Twelve columns let a short last row stretch evenly across the width.
       const inTail = tail && i >= shown.length - tail;
       card.root.style.gridColumn = `span ${12 / (inTail ? tail : cols)}`;
@@ -896,6 +936,8 @@
     if (!groups()[index]) return;
     const changed = index !== state.selected;
     if (!changed && state.view === "group") return;
+    // A group switch, or coming back from Home or Settings, slides the cards in one after another.
+    if (changed || state.view !== "group") state.arriving = true;
     state.view = "group";
     if (changed) {
       state.selected = index;
@@ -956,7 +998,7 @@
     const group = groups()[index];
     const count = group.sessions.length;
     const detail = count
-      ? `Its ${count} ${count === 1 ? "session" : "sessions"} will be stopped and removed from the deck.`
+      ? `Its ${count} ${count === 1 ? "session" : "sessions"} will be stopped and removed from Nesa.`
       : "This group is empty.";
     const ok = await confirmDialog({ title: `Delete "${group.name}"?`, text: detail, label: "Delete" });
     if (!ok) return;
@@ -1023,6 +1065,7 @@
     const top = Math.max(8, Math.min(y, window.innerHeight - ht - 8));
     menu.style.left = `${left}px`;
     menu.style.top = `${top}px`;
+    menu.style.transformOrigin = alignRight ? "top right" : "top left"; // the menu grows from its anchor
 
     const onPointerDown = (e) => { if (!menu.contains(e.target)) closeMenu(); };
     document.addEventListener("pointerdown", onPointerDown, true);

@@ -11,8 +11,8 @@
     <key>CFBundleShortVersionString</key>
     <string>0.1.0</string>
     <key>NSMicrophoneUsageDescription</key>
-    <string>Session Deck listens while you hold Option and Command, then types what you said into the focused session.</string>
+    <string>Nesa listens while you hold Option, then types what you said into the focused session.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
-    <string>Session Deck turns your speech into text on this Mac. Nothing is sent to a server.</string>
+    <string>Nesa turns your speech into text on this Mac. Nothing is sent to a server.</string>
 </dict>
 </plist>
