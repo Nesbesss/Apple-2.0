@@ -115,6 +115,8 @@
     hotkeyChoices: $("#hotkey-choices"),
     accentSwatches: $("#accent-swatches"),
     accentCustom: $("#accent-custom"),
+    accentHex: $("#accent-hex"),
+    accentReset: $("#accent-reset"),
     surfaceChoices: $("#surface-choices"),
     statusColors: $("#status-colors"),
     alertsToggle: $("#alerts-toggle"),
@@ -1601,6 +1603,9 @@
     el.imagegenCount.hidden = length < IMAGEGEN_LIMIT * 0.8;
     el.imagegenIdeas.hidden = length > 0;
     el.imagegenGo.disabled = state.imageGen.busy || !el.imagegenPrompt.value.trim();
+    // The prompt grows with its text up to the CSS max-height. The 2px is the border, which scrollHeight leaves out.
+    el.imagegenPrompt.style.height = "auto";
+    el.imagegenPrompt.style.height = `${el.imagegenPrompt.scrollHeight + 2}px`;
   }
 
   // The status in the header. While a picture is being made, it counts the time.
@@ -2019,6 +2024,8 @@
       onclick: () => setSetting("accent", accent.value),
     })));
     el.accentCustom.value = settings.accent;
+    el.accentHex.textContent = settings.accent.toUpperCase();
+    el.accentReset.disabled = settings.accent === DEFAULT_SETTINGS.accent;
 
     el.surfaceChoices.replaceChildren(...Object.keys(SURFACES).map((key) => {
       const surface = SURFACES[key];
@@ -2071,15 +2078,18 @@
   function colorRow(key, label) {
     const value = settings[key];
     const fallback = DEFAULT_SETTINGS[key];
+    // Dragging the picker updates this text directly. A full re-render would close the open picker.
+    const hex = h("span", { class: "color-hex" }, value.toUpperCase());
     return h("div", { class: "setting-row" },
       h("span", { class: "setting-label" }, label),
       h("div", { class: "setting-control" },
+        hex,
         h("input", {
           class: "color-input",
           type: "color",
           value,
           "aria-label": `${label} color`,
-          oninput: (e) => setColor(key, e.target.value),
+          oninput: (e) => { hex.textContent = e.target.value.toUpperCase(); setColor(key, e.target.value); },
           onchange: (e) => setSetting(key, e.target.value),
         }),
         h("button", { class: "link", type: "button", disabled: value === fallback, onclick: () => setSetting(key, fallback) }, "Reset")));
@@ -2387,8 +2397,12 @@
       renderResumeGroups();
       renderResumeList();
     }));
-    el.accentCustom.addEventListener("input", (e) => setColor("accent", e.target.value));
+    el.accentCustom.addEventListener("input", (e) => {
+      el.accentHex.textContent = e.target.value.toUpperCase();
+      setColor("accent", e.target.value);
+    });
     el.accentCustom.addEventListener("change", (e) => setSetting("accent", e.target.value));
+    el.accentReset.addEventListener("click", () => setSetting("accent", DEFAULT_SETTINGS.accent));
     $("#colors-reset").addEventListener("click", resetColors);
     bindImageGen();
   }
