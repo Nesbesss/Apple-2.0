@@ -22,6 +22,30 @@
     </div>
     <nav class="group-list" id="group-list" aria-label="Groups"></nav>
     <div class="sidebar-foot">
+      <!-- Usage on this Mac. Claude's numbers are Claude Code's own once its status line is connected, and an
+           estimate against the limit set in Settings until then. Codex's numbers are its own. -->
+      <button class="usage" id="usage" type="button" title="Usage on this Mac. Click for details.">
+        <span class="usage-row" id="usage-claude">
+          <span class="usage-name">Claude <em>est.</em></span>
+          <span class="usage-track"><span class="usage-fill"></span></span>
+          <span class="usage-text">–</span>
+        </span>
+        <span class="usage-row" id="usage-claude-week" hidden>
+          <span class="usage-name">Claude week</span>
+          <span class="usage-track"><span class="usage-fill"></span></span>
+          <span class="usage-text">–</span>
+        </span>
+        <span class="usage-row" id="usage-codex">
+          <span class="usage-name">Codex 5h</span>
+          <span class="usage-track"><span class="usage-fill"></span></span>
+          <span class="usage-text">–</span>
+        </span>
+        <span class="usage-row" id="usage-week" hidden>
+          <span class="usage-name">Codex week</span>
+          <span class="usage-track"><span class="usage-fill"></span></span>
+          <span class="usage-text">–</span>
+        </span>
+      </button>
       <button class="nav-item" type="button" data-view="settings" title="Settings (⌘,)"><span class="nav-icon" data-icon="gear"></span>Settings</button>
     </div>
   </aside>
@@ -158,6 +182,29 @@
               <small>A system notification when Nesa is in the background.</small></span>
             <button class="switch" id="alerts-toggle" type="button" role="switch" aria-checked="true" aria-label="Alert when a session finishes"></button>
           </div>
+        </section>
+
+        <section class="page-block" id="usage-settings">
+          <h2 class="block-title">Usage</h2>
+          <p class="setting-hint">Codex writes its limits to its own logs, so its numbers are exact. Claude's own limits come from Claude Code's status line, which Nesa can connect with a small script. Until it is connected, Nesa estimates Claude use from your transcripts, and that estimate needs your limit.</p>
+          <div class="setting-row" id="claude-status-row">
+            <span class="setting-label">Claude's own limits
+              <small id="claude-status-text">Checking…</small></span>
+            <div class="setting-control">
+              <button class="btn btn-outline" id="claude-status-action" type="button" disabled>Connect…</button>
+            </div>
+          </div>
+          <div class="setting-row" id="claude-calibrate-row">
+            <span class="setting-label">Claude limit
+              <small id="claude-limit-status">Not set</small></span>
+            <div class="setting-control">
+              <input class="input mono usage-input" id="claude-calibrate-input" type="number" min="1" max="100" step="1" inputmode="numeric" placeholder="%" aria-label="Percent of your Claude limit that /usage shows">
+              <button class="btn btn-outline" id="claude-calibrate" type="button">Set limit</button>
+              <button class="link" id="claude-limit-clear" type="button" hidden>Clear</button>
+            </div>
+          </div>
+          <p class="setting-hint">In Claude Code, run <code>/usage</code>, type the percent it shows, and press Set limit. Nesa works out your limit from the Claude tokens it can see right now.</p>
+          <p class="form-error" id="claude-limit-error" role="alert" hidden></p>
         </section>
       </div>
     </section>

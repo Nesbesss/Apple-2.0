@@ -1,5 +1,6 @@
 mod activity;
 mod agents;
+mod claude_limits;
 mod commands;
 mod dictation;
 mod images;
@@ -7,6 +8,7 @@ mod pty;
 mod sound;
 mod store;
 mod transcripts;
+mod usage;
 mod web;
 
 use std::{
@@ -52,6 +54,7 @@ pub fn run() {
                 ptys: Mutex::new(HashMap::new()),
                 dictation: Default::default(),
             });
+            app.manage(usage::UsageState::default());
             if let Err(err) = dictation::warm(app.handle(), &app.state::<AppState>()) {
                 eprintln!("dictation: {err}");
             }
@@ -96,6 +99,10 @@ pub fn run() {
             commands::session_status,
             commands::list_transcripts,
             commands::resume_session,
+            usage::usage_snapshot,
+            claude_limits::claude_limits,
+            claude_limits::connect_claude_limits,
+            claude_limits::disconnect_claude_limits,
             dictation::dictation_start,
             dictation::dictation_stop,
             dictation::dictation_cancel,
