@@ -1557,7 +1557,7 @@
 
   // Claude: tokens in the last five hours against the limit the user set. The share is null without a limit.
   function claudeUsage(claude) {
-    const detail = `Estimated from Claude Code transcripts: ${formatTokens(claude.tokens5h)} tokens in the last five hours, from ${claude.messages5h} messages. Input, cache writes and output count. Cache reads (${formatTokens(claude.cacheRead5h)}) do not.`;
+    const detail = `Estimated from Claude Code transcripts: ${formatTokens(claude.tokens5h)} tokens in the last five hours, from ${claude.messages5h} messages. Input, cache writes and output count. Cache reads (${formatTokens(claude.cacheRead5h)}) do not. The five hours roll forward from now, but Claude's own limit resets in blocks, so this is only an estimate.`;
     const limit = settings.claudeLimit;
     if (!limit) return { share: null, text: `${formatTokens(claude.tokens5h)} in 5h · set limit`, title: detail };
     const share = claude.tokens5h / limit;
@@ -1580,7 +1580,7 @@
   function codexUsage(win, now) {
     const used = win.usedPercent;
     const untilReset = win.resetsAtMs - now;
-    const asOf = `Codex reported this ${formatSpan(now - win.observedAtMs)} ago.`;
+    const asOf = `Codex reported ${formatAgo(now - win.observedAtMs)}. The window resets ${formatWhen(win.resetsAtMs)}.`;
     if (used <= 0) return { share: 0, text: `unused · resets in ${formatSpan(untilReset)}`, title: `No use in this window. ${asOf}` };
     const percent = `${Math.round(used)}%`;
     const elapsed = win.observedAtMs - (win.resetsAtMs - win.windowMinutes * 60000);
@@ -1594,7 +1594,7 @@
 
   function setUsageRow(row, share, text, title) {
     row.querySelector(".usage-text").textContent = text;
-    row.title = title;
+    row.dataset.note = title; // the full sentence, shown in the hover panel
     const fill = Math.min(1, Math.max(0, share ?? 0));
     row.querySelector(".usage-fill").style.width = `${(fill * 100).toFixed(1)}%`;
     row.classList.toggle("is-warm", fill >= 0.7 && fill < 0.9);
@@ -1622,15 +1622,53 @@
       }
     }
 
-    const snap = usageSnapshot;
-    if (!snap) return;
-    const codex = snap.codex;
+    if (usageSnapshot) renderCodexRows(usageSnapshot.codex, now);
+    renderUsageDetail();
+  }
+
+  function renderCodexRows(codex, now) {
     const five = codex && codex.fiveHour ? codexUsage(codex.fiveHour, now) : null;
     const week = codex && codex.weekly ? codexUsage(codex.weekly, now) : null;
     if (five) setUsageRow($("#usage-codex"), five.share, five.text, five.title);
     else setUsageRow($("#usage-codex"), null, "no recent use", "Codex has no rate-limit report from the last eight days.");
     $("#usage-week").hidden = !week;
     if (week) setUsageRow($("#usage-week"), week.share, week.text, week.title);
+  }
+
+  // "just now", "5m ago", "2h 05m ago". Under a minute, "0m ago" would read as a mistake.
+  const formatAgo = (ms) => (ms < 60000 ? "just now" : `${formatSpan(ms)} ago`);
+
+  // A reset time the user can read at a glance: "14:05" today, "Sun 14:05" later.
+  function formatWhen(ms) {
+    const when = new Date(ms);
+    const sameDay = when.toDateString() === new Date().toDateString();
+    return when.toLocaleString([], sameDay
+      ? { hour: "2-digit", minute: "2-digit" }
+      : { weekday: "short", hour: "2-digit", minute: "2-digit" });
+  }
+
+  // The hover panel: where each number comes from, then one block per visible meter with its full note.
+  function renderUsageDetail() {
+    const panel = $("#usage-detail");
+    const codex = usageSnapshot ? usageSnapshot.codex : null;
+    const official = claudeLimits && claudeLimits.status === "live";
+    const rows = [...document.querySelectorAll("#usage .usage-row")].filter((row) => !row.hidden);
+    const updated = usageSnapshot
+      ? `Updated ${formatAgo(Date.now() - usageSnapshot.generatedAtMs)}. Refreshes every 30 seconds while Nesa is visible.`
+      : "Reading usage from this Mac…";
+    panel.replaceChildren(
+      h("p", { class: "usage-detail-head" }, official
+        ? "Claude: Claude Code's own limits, from its status line."
+        : "Claude: an estimate from your transcripts, against the limit you set."),
+      h("p", { class: "usage-detail-head" }, codex
+        ? `Codex: its own report${codex.plan ? `, ${codex.plan} plan` : ""}.`
+        : "Codex: no report in the last eight days."),
+      ...rows.map((row) => h("div", { class: "usage-detail-item" },
+        h("div", { class: "usage-detail-line" },
+          h("strong", {}, row.querySelector(".usage-name").textContent),
+          h("span", {}, row.querySelector(".usage-text").textContent)),
+        h("p", { class: "usage-detail-note" }, row.dataset.note || ""))),
+      h("p", { class: "usage-detail-foot" }, updated));
   }
 
   async function refreshUsage() {
@@ -1656,7 +1694,7 @@
   function officialClaudeUsage(win, now) {
     const used = win.usedPercent;
     const resets = `resets in ${formatSpan(win.resetsAtMs - now)}`;
-    const title = `Claude Code reported this ${formatSpan(now - win.observedAtMs)} ago. The same figure /usage shows.`;
+    const title = `Claude Code reported ${formatAgo(now - win.observedAtMs)}. The window resets ${formatWhen(win.resetsAtMs)}. The same figure /usage shows.`;
     if (used <= 0) return { share: 0, text: `unused · ${resets}`, title };
     return { share: used / 100, text: `${Math.round(used)}% · ${resets}`, title };
   }

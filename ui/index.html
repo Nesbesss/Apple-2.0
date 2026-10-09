@@ -24,28 +24,32 @@
     <div class="sidebar-foot">
       <!-- Usage on this Mac. Claude's numbers are Claude Code's own once its status line is connected, and an
            estimate against the limit set in Settings until then. Codex's numbers are its own. -->
-      <button class="usage" id="usage" type="button" title="Usage on this Mac. Click for details.">
-        <span class="usage-row" id="usage-claude">
-          <span class="usage-name">Claude <em>est.</em></span>
-          <span class="usage-track"><span class="usage-fill"></span></span>
-          <span class="usage-text">–</span>
-        </span>
-        <span class="usage-row" id="usage-claude-week" hidden>
-          <span class="usage-name">Claude week</span>
-          <span class="usage-track"><span class="usage-fill"></span></span>
-          <span class="usage-text">–</span>
-        </span>
-        <span class="usage-row" id="usage-codex">
-          <span class="usage-name">Codex 5h</span>
-          <span class="usage-track"><span class="usage-fill"></span></span>
-          <span class="usage-text">–</span>
-        </span>
-        <span class="usage-row" id="usage-week" hidden>
-          <span class="usage-name">Codex week</span>
-          <span class="usage-track"><span class="usage-fill"></span></span>
-          <span class="usage-text">–</span>
-        </span>
-      </button>
+      <div class="usage-wrap">
+        <button class="usage" id="usage" type="button" aria-label="Usage on this Mac. Click to open Settings." aria-describedby="usage-detail">
+          <span class="usage-row" id="usage-claude">
+            <span class="usage-name">Claude <em>est.</em></span>
+            <span class="usage-track"><span class="usage-fill"></span></span>
+            <span class="usage-text">–</span>
+          </span>
+          <span class="usage-row" id="usage-claude-week" hidden>
+            <span class="usage-name">Claude week</span>
+            <span class="usage-track"><span class="usage-fill"></span></span>
+            <span class="usage-text">–</span>
+          </span>
+          <span class="usage-row" id="usage-codex">
+            <span class="usage-name">Codex 5h</span>
+            <span class="usage-track"><span class="usage-fill"></span></span>
+            <span class="usage-text">–</span>
+          </span>
+          <span class="usage-row" id="usage-week" hidden>
+            <span class="usage-name">Codex week</span>
+            <span class="usage-track"><span class="usage-fill"></span></span>
+            <span class="usage-text">–</span>
+          </span>
+        </button>
+        <!-- Shown on hover: where each number comes from, and its full note. Read-only. -->
+        <div class="usage-detail" id="usage-detail" role="tooltip"></div>
+      </div>
       <button class="nav-item" type="button" data-view="settings" title="Settings (⌘,)"><span class="nav-icon" data-icon="gear"></span>Settings</button>
     </div>
   </aside>
