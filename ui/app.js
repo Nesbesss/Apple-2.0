@@ -28,7 +28,6 @@
     folder: stroke('<path d="M2.5 4.5h3.25l1.5 1.5h6.25v6.5h-11z"/>'),
     copy: stroke('<rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M3.5 10.5v-6a1 1 0 0 1 1-1h6"/>'),
     stop: '<svg viewBox="0 0 16 16" fill="currentColor"><rect x="4" y="4" width="8" height="8" rx="1.5"/></svg>',
-    deck: stroke('<rect x="5" y="2.5" width="8.5" height="7" rx="1.5"/><path d="M3 6v6.5a1 1 0 0 0 1 1h7.5"/>'),
   };
 
   // ----------------------------------------------------------------- state
@@ -46,6 +45,7 @@
     done: new Set(), // ids whose work finished while the user was not looking
     dragId: null, // session id being dragged in the sidebar
     newKind: "claude",
+    arriving: false, // the next grid render plays the entrance animation on every card
   };
   const cards = new Map(); // id -> card entry (DOM, terminal, size bookkeeping)
   const pendingData = new Map(); // id -> bytes that arrived before the card existed
@@ -101,10 +101,20 @@
   const icon = (name) => h("span", { class: "icon", html: ICONS[name] });
   const errorText = (err) => (typeof err === "string" ? err : (err && err.message) || String(err));
 
+  // Restarts a one-shot CSS animation by re-adding its class (the reflow makes the browser notice).
+  function replayClass(node, name) {
+    node.classList.remove(name);
+    void node.offsetWidth;
+    node.classList.add(name);
+  }
+
   function toast(message, kind = "error") {
     const node = h("div", { class: `toast ${kind}` }, errorText(message));
     el.toasts.append(node);
-    setTimeout(() => node.remove(), 4500);
+    setTimeout(() => {
+      node.classList.add("leaving");
+      setTimeout(() => node.remove(), 200); // matches the toast-out animation
+    }, 4300);
   }
 
   // Runs a command; failures become a toast instead of an exception.
@@ -189,16 +199,23 @@
     if (working) state.done.delete(id);
     else if (wasWorking && !(document.hasFocus() && isOnScreen(id))) {
       state.done.add(id);
+      flashRow(id);
       announceDone(id);
     }
     setStatus(id, { working, running: true });
+  }
+
+  // A finished session glows once in the sidebar, so it is easy to spot among the others.
+  function flashRow(id) {
+    const row = el.groupList.querySelector(`.session-row[data-id="${id}"]`);
+    if (row) replayClass(row, "flash");
   }
 
   // A system notification, shown only while the app is in the background.
   function announceDone(id) {
     const session = findSession(id);
     if (!session || document.hasFocus() || !alertsOn()) return;
-    invoke("notify", { title: "Session Deck", body: `${session.name} finished` }).catch(() => {});
+    invoke("notify", { title: "Nesa", body: `${session.name} finished` }).catch(() => {});
   }
 
   async function refreshStatus(ids) {
@@ -337,7 +354,13 @@
     const head = h("header", { class: "card-head", ondblclick: (e) => { if (!e.target.closest("button")) toggleMaximize(session.id); } },
       dot, logo(session.kind), name, meta, status, h("span", { class: "spacer" }), restart, expand, more);
     const body = h("div", { class: "card-body" });
-    const root = h("article", { class: "card", "data-id": session.id, onmousedown: () => focusCard(session.id) }, head, body);
+    // The entrance animation is one-shot: drop its class once it ends, so moving the card later does not replay it.
+    const root = h("article", {
+      class: "card",
+      "data-id": session.id,
+      onmousedown: () => focusCard(session.id),
+      onanimationend: (e) => { if (e.target === e.currentTarget) e.currentTarget.classList.remove("arrive"); },
+    }, head, body);
     return { root, body, dot, name, meta, status, restart, expand };
   }
 
@@ -542,6 +565,7 @@
       state.selected = index;
       state.maximizedId = null;
       state.renaming = null;
+      state.arriving = true;
       stored.set("selectedGroup", String(index));
     } else if (state.maximizedId) {
       state.maximizedId = id;
@@ -686,6 +710,11 @@
     const group = currentGroup();
     const n = group ? group.sessions.length : 0;
     el.title.textContent = group ? group.name : "";
+    // Only a group switch slides the title in. Renames and new sessions re-render it quietly.
+    if (el.title.dataset.index !== String(state.selected)) {
+      el.title.dataset.index = String(state.selected);
+      replayClass(el.title, "swap");
+    }
     el.count.textContent = n ? `${n} ${n === 1 ? "session" : "sessions"}` : "";
     updateSummary();
   }
@@ -717,10 +746,18 @@
     const cols = gridColumns(shown.length);
     el.grid.style.setProperty("--rows", Math.ceil(shown.length / cols));
     const tail = shown.length % cols;
+    const arriving = state.arriving;
+    state.arriving = false;
     const entries = shown.map((session, i) => {
+      const fresh = !cards.has(session.id);
       const card = cards.get(session.id) || createCard(session);
       updateCardInfo(card, session);
       updateCardStatus(session.id);
+      // A new card, or every card after a group switch, arrives one after another.
+      if (fresh || arriving) {
+        card.root.style.setProperty("--i", i);
+        card.root.classList.add("arrive");
+      }
       // Twelve columns let a short last row stretch evenly across the width.
       const inTail = tail && i >= shown.length - tail;
       card.root.style.gridColumn = `span ${12 / (inTail ? tail : cols)}`;
@@ -751,6 +788,7 @@
     state.maximizedId = null;
     state.focusedId = null;
     state.renaming = null;
+    state.arriving = true;
     stored.set("selectedGroup", String(index));
     renderAll();
     focusCard(state.focusedId);
@@ -803,7 +841,7 @@
     const group = groups()[index];
     const count = group.sessions.length;
     const detail = count
-      ? `Its ${count} ${count === 1 ? "session" : "sessions"} will be stopped and removed from the deck.`
+      ? `Its ${count} ${count === 1 ? "session" : "sessions"} will be stopped and removed from Nesa.`
       : "This group is empty.";
     const ok = await confirmDialog({ title: `Delete "${group.name}"?`, text: detail, label: "Delete" });
     if (!ok) return;
@@ -870,6 +908,7 @@
     const top = Math.max(8, Math.min(y, window.innerHeight - ht - 8));
     menu.style.left = `${left}px`;
     menu.style.top = `${top}px`;
+    menu.style.transformOrigin = alignRight ? "top right" : "top left"; // the menu grows from its anchor
 
     const onPointerDown = (e) => { if (!menu.contains(e.target)) closeMenu(); };
     document.addEventListener("pointerdown", onPointerDown, true);
@@ -1219,7 +1258,7 @@
   async function confirmQuit(working) {
     if (el.confirmDialog.open) return;
     const ok = await confirmDialog({
-      title: "Quit Session Deck?",
+      title: "Quit Nesa?",
       text: `${working === 1 ? "A session is" : `${working} sessions are`} still working. Quitting stops ${working === 1 ? "it" : "them"} mid-task. Sessions reopen with their transcripts the next time you open them.`,
       label: "Quit",
     });

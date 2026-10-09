@@ -1,4 +1,4 @@
-// speech-helper: the dictation sidecar for Session Deck.
+// speech-helper: the dictation sidecar for Nesa.
 //
 // Records from the microphone while the app asks, streams the audio through Apple's on-device
 // speech engine (SpeechAnalyzer with DictationTranscriber) and reports results as JSON lines.
@@ -23,7 +23,7 @@ import Speech
 let contextualWords = [
     "Claude", "Claude Code", "Codex", "Anthropic", "Kubernetes", "gitignore", "pull request",
     "commit", "rebase", "Tauri", "Rust", "Cargo", "npm", "Xcode", "xterm", "localhost", "stdout",
-    "JSON", "TypeScript", "SwiftUI", "GitHub", "Session Deck", "pty", "merge", "diff",
+    "JSON", "TypeScript", "SwiftUI", "GitHub", "Nesa", "pty", "merge", "diff",
 ]
 
 enum Out {
@@ -46,7 +46,7 @@ enum DictationError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .microphoneDenied: "Allow Session Deck to use the microphone in System Settings, Privacy & Security."
+        case .microphoneDenied: "Allow Nesa to use the microphone in System Settings, Privacy & Security."
         case .noMicrophone: "No microphone input is available."
         case .noAudioFormat: "The speech engine has no audio format on this Mac."
         }

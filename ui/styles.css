@@ -1,4 +1,4 @@
-/* Session Deck: dark, flat, quiet. Dark-only by design. */
+/* Nesa: dark, flat, quiet. Dark-only by design. */
 
 :root {
   color-scheme: dark;
@@ -25,6 +25,9 @@
   --font-mono: "SF Mono", Menlo, monospace;
   --radius: 8px;
   --ease: 120ms ease;
+  /* Entrances decelerate, exits accelerate. Used by the motion rules near the end of this file. */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
 }
 
 * { box-sizing: border-box; margin: 0; }
@@ -85,10 +88,10 @@ kbd {
   border-radius: 6px;
   color: var(--muted);
   white-space: nowrap;
-  transition: color var(--ease), background-color var(--ease), border-color var(--ease);
+  transition: color var(--ease), background-color var(--ease), border-color var(--ease), transform 120ms var(--ease-out);
 }
 .btn:hover { background: var(--hover); color: var(--text); }
-.btn:active { background: var(--selected); }
+.btn:active { background: var(--selected); transform: scale(0.97); }
 .btn:disabled { opacity: 0.5; pointer-events: none; }
 .btn-outline { border: 1px solid var(--line); }
 .btn-outline:hover { background: var(--hover); border-color: var(--selected); }
@@ -105,12 +108,12 @@ kbd {
   height: 24px;
   border-radius: 6px;
   color: var(--muted);
-  transition: color var(--ease), background-color var(--ease);
+  transition: color var(--ease), background-color var(--ease), transform 120ms var(--ease-out);
 }
 .icon { display: inline-flex; }
 .icon-btn svg { width: 14px; height: 14px; }
 .icon-btn:hover { background: var(--hover); color: var(--text); }
-.icon-btn:active { background: var(--selected); }
+.icon-btn:active { background: var(--selected); transform: scale(0.9); }
 
 /* Sidebar: groups, each with its sessions nested underneath */
 
@@ -129,16 +132,19 @@ kbd {
   flex: none;
   padding-left: 84px; /* clears the window's traffic lights */
 }
+/* The same tile as the app icon, so the sidebar and the Dock agree. */
 .brand-mark {
   display: grid;
   place-items: center;
-  width: 20px;
-  height: 20px;
+  width: 22px;
+  height: 22px;
   border-radius: 6px;
-  background: var(--accent);
-  color: var(--accent-ink);
+  background: linear-gradient(180deg, #2a2a2f, #131315);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  color: #b3c4ff;
 }
-.brand-mark svg { width: 13px; height: 13px; }
+/* pointer-events: the header drags the window from its own element, not from the glyph inside. */
+.brand-mark svg { width: 13px; height: 16px; pointer-events: none; }
 .brand { font-size: 13px; font-weight: 600; letter-spacing: -0.01em; white-space: nowrap; }
 
 .sidebar-section {
@@ -436,15 +442,15 @@ kbd {
 .empty-mark {
   display: grid;
   place-items: center;
-  width: 44px;
-  height: 44px;
+  width: 56px;
+  height: 56px;
   margin-bottom: 6px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--sidebar);
-  color: var(--muted);
+  border-radius: 14px;
+  background: linear-gradient(180deg, #2a2a2f, #131315);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08), 0 10px 30px rgba(0, 0, 0, 0.35);
+  color: #b3c4ff;
 }
-.empty-mark svg { width: 20px; height: 20px; }
+.empty-mark svg { width: 20px; height: 26px; }
 .empty h2 { font-size: 16px; font-weight: 600; }
 .empty > p { max-width: 430px; color: var(--muted); line-height: 1.6; }
 .empty-actions { display: flex; gap: 10px; margin-top: 10px; }
@@ -458,9 +464,10 @@ kbd {
   border-radius: 10px;
   background: var(--sidebar);
   text-align: left;
-  transition: border-color var(--ease), background-color var(--ease);
+  transition: border-color var(--ease), background-color var(--ease), transform 120ms var(--ease-out);
 }
 .empty-action:hover { border-color: var(--selected); background: var(--hover); }
+.empty-action:active { transform: scale(0.98); }
 .empty-action .logo { width: 22px; height: 22px; }
 .empty-action-text { display: flex; flex-direction: column; gap: 2px; }
 .empty-action-text strong { font-weight: 600; }
@@ -752,6 +759,71 @@ kbd {
     transition: none;
     animation: none;
   }
+}
+
+/* Motion. Entrances decelerate, exits accelerate, and each rule below has a reduced-motion
+   override at the bottom. Cards only move with opacity and translate: xterm measures its cells
+   from the card's layout, and a scale would skew that measurement. */
+
+.dot { transition: background-color 200ms ease, box-shadow 200ms ease; }
+.card-status { transition: background-color 200ms ease, color 200ms ease; }
+
+/* Cards arriving in a group, staggered left to right by --i. */
+@keyframes card-in { from { opacity: 0; transform: translateY(10px); } }
+.card.arrive {
+  animation: card-in 320ms var(--ease-out) both;
+  animation-delay: calc(var(--i, 0) * 45ms);
+}
+
+@keyframes rise { from { opacity: 0; transform: translateY(8px); } }
+.empty:not([hidden]) > * { animation: rise 420ms var(--ease-out) both; }
+.empty:not([hidden]) > :nth-child(2) { animation-delay: 60ms; }
+.empty:not([hidden]) > :nth-child(3) { animation-delay: 110ms; }
+.empty:not([hidden]) > :nth-child(4) { animation-delay: 160ms; }
+.empty:not([hidden]) > :nth-child(5) { animation-delay: 210ms; }
+
+@keyframes title-in { from { opacity: 0; transform: translateY(4px); } }
+.toolbar-title.swap { animation: title-in 260ms var(--ease-out) both; }
+
+/* A session that finished while nobody was watching: its sidebar row glows green once. */
+@keyframes row-flash {
+  from {
+    background-color: color-mix(in srgb, var(--done) 16%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--done) 55%, transparent);
+  }
+  to {
+    background-color: transparent;
+    box-shadow: inset 0 0 0 1px transparent;
+  }
+}
+.session-row.flash { animation: row-flash 1.6s var(--ease-out); }
+
+@keyframes dialog-in { from { opacity: 0; transform: translateY(10px) scale(0.98); } }
+@keyframes backdrop-in { from { opacity: 0; } }
+.dialog[open] { animation: dialog-in 240ms var(--ease-out) both; }
+.dialog[open]::backdrop { animation: backdrop-in 240ms ease both; }
+
+@keyframes menu-in { from { opacity: 0; transform: translateY(-4px) scale(0.97); } }
+.menu { animation: menu-in 160ms var(--ease-out) both; }
+
+@keyframes toast-in { from { opacity: 0; transform: translateY(12px) scale(0.97); } }
+@keyframes toast-out { to { opacity: 0; transform: translateY(6px) scale(0.97); } }
+.toast { animation: toast-in 280ms var(--ease-out) both; }
+.toast.leaving { animation: toast-out 200ms var(--ease-in) both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .card.arrive,
+  .empty:not([hidden]) > *,
+  .toolbar-title.swap,
+  .session-row.flash,
+  .dialog[open],
+  .dialog[open]::backdrop,
+  .menu,
+  .toast,
+  .toast.leaving { animation: none; }
+  .btn:active,
+  .icon-btn:active,
+  .empty-action:active { transform: none; }
 }
 
 /* Scrollbars */
