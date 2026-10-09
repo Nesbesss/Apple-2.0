@@ -1214,7 +1214,7 @@
   // Dictation yields to them, and the keys do not reach the terminal.
   function onDictationKeyDown(e) {
     if (dictation.state === "idle") {
-      if (!chordDown(e) || el.sessionDialog.open || el.confirmDialog.open) return;
+      if (!chordDown(e) || anyDialogOpen()) return;
       beginDictation();
       return;
     }
