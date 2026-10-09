@@ -141,7 +141,7 @@
   const SETTINGS_KEY = "settings";
   const HEX = /^#[0-9a-f]{6}$/i;
   // claudeLimit is tokens per five hours, 0 when not set. claudeLimitAt is when it was set (Unix ms).
-  const DEFAULT_SETTINGS = { accent: "#7c9cff", surface: "default", done: "#4ac26b", fail: "#f06b6b", claude: "#d97757", hotkey: "alt", donePing: "Ping", claudeLimit: 0, claudeLimitAt: 0 };
+  const DEFAULT_SETTINGS = { accent: "#7c9cff", surface: "default", done: "#4ac26b", fail: "#f06b6b", claude: "#d97757", hotkey: "alt", donePing: "Chime", claudeLimit: 0, claudeLimitAt: 0 };
   const SURFACES = {
     default: { label: "Default", canvas: "#121213", sidebar: "#171718", card: "#1c1c1e" },
     midnight: { label: "Midnight", canvas: "#0b0e18", sidebar: "#10141f", card: "#151a29" },
@@ -168,9 +168,9 @@
     "ctrl+alt": { label: "Control and Option", symbol: "⌃⌥", keys: ["ctrl", "alt"] },
   };
   const MODIFIER_FLAG = { alt: "altKey", ctrl: "ctrlKey", meta: "metaKey", shift: "shiftKey" };
-  // Sounds a finished agent can play, as macOS system sounds. The first one is the default.
-  // The backend keeps the same list and refuses any other name.
-  const DONE_PINGS = ["Ping", "Glass", "Hero", "Funk", "Frog", "Bottle", "Blow", "Morse", "Purr", "Submarine", "Sosumi"];
+  // Sounds a finished agent can play. They are made by scripts/make-done-pings.mjs. The first one is the
+  // default. The backend keeps the same list and refuses any other name.
+  const DONE_PINGS = ["Chime", "Marimba", "Harp", "Droplet", "Glow", "Lift", "Knock", "Twinkle", "Pluck", "Echo", "Ripple"];
 
   let settings = { ...DEFAULT_SETTINGS };
 
