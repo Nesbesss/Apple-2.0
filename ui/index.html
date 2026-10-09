@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Session Deck</title>
+  <link rel="stylesheet" href="vendor/xterm.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="sidebar-head" data-tauri-drag-region></div>
+    <div class="sidebar-section">
+      <span class="section-label" data-tauri-drag-region>Groups</span>
+      <button class="icon-btn" id="new-group" title="New group" aria-label="New group" data-icon="plus"></button>
+    </div>
+    <nav class="group-list" id="group-list" aria-label="Groups"></nav>
+  </aside>
+
+  <main class="main">
+    <header class="toolbar" data-tauri-drag-region>
+      <h1 class="toolbar-title" id="group-title" data-tauri-drag-region></h1>
+      <span class="toolbar-count" id="group-count" data-tauri-drag-region></span>
+      <span class="spacer" data-tauri-drag-region></span>
+      <button class="btn" id="new-claude"><span class="logo logo-claude" data-logo="claude"></span>New Claude</button>
+      <button class="btn" id="new-codex"><span class="logo logo-openai" data-logo="openai"></span>New Codex</button>
+    </header>
+
+    <section class="stage">
+      <div class="grid" id="grid"></div>
+      <div class="empty" id="empty" hidden>
+        <div class="empty-mark" data-icon="terminal"></div>
+        <h2>No sessions in this group</h2>
+        <p>Start a Claude or Codex session to see it here.<br>Press <kbd>&#8984;</kbd><kbd>N</kbd> to begin.</p>
+      </div>
+    </section>
+  </main>
+
+  <!-- Hidden holder that keeps terminals of off-screen cards alive. -->
+  <div id="parking" hidden></div>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <dialog id="new-session" class="dialog">
+    <form id="new-session-form" autocomplete="off" spellcheck="false">
+      <h2 class="dialog-title">New session</h2>
+
+      <div class="segmented" role="radiogroup" aria-label="Agent">
+        <button type="button" role="radio" data-kind="claude"><span class="logo logo-claude" data-logo="claude"></span>Claude</button>
+        <button type="button" role="radio" data-kind="codex"><span class="logo logo-openai" data-logo="openai"></span>Codex</button>
+      </div>
+
+      <label class="field">
+        <span class="field-label">Name <em>optional</em></span>
+        <input class="input" id="session-name" type="text" placeholder="Defaults to the agent name">
+      </label>
+
+      <div class="field">
+        <label class="field-label" for="session-cwd">Folder</label>
+        <div class="field-row">
+          <input class="input mono" id="session-cwd" type="text" placeholder="/path/to/project">
+          <button type="button" class="btn btn-outline" id="browse">Browse</button>
+        </div>
+      </div>
+
+      <p class="form-error" id="session-error" role="alert" hidden></p>
+
+      <div class="dialog-actions">
+        <button type="button" class="btn" id="session-cancel">Cancel</button>
+        <button type="submit" class="btn btn-primary" id="session-start">Start</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="confirm" class="dialog dialog-narrow">
+    <form id="confirm-form" method="dialog">
+      <h2 class="dialog-title" id="confirm-title"></h2>
+      <p class="dialog-text" id="confirm-text"></p>
+      <div class="dialog-actions">
+        <button type="button" class="btn" id="confirm-cancel">Cancel</button>
+        <button type="submit" class="btn btn-danger" id="confirm-ok">Delete</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="vendor/xterm.js"></script>
+  <script src="vendor/addon-fit.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
