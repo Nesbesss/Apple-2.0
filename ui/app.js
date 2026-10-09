@@ -1070,67 +1070,122 @@
   // macOS system sounds, played natively by the backend.
   const SOUNDS = { start: "Tink", stop: "Pop", done: "Glass" };
   const dictation = {
-    state: "idle", // "idle" | "held" (recording) | "ignoring" (a shortcut was typed during the chord)
-    shown: false, // the HUD is up
+    state: "idle", // "idle" | "held" (Option is down) | "ignoring" (a shortcut was typed during the chord)
+    shown: false, // the pill is up
     recording: false, // the mic is open
     timer: 0,
     frame: 0,
     level: 0, // smoothed mic level, drives the bars
     target: 0, // last level from the helper
     audio: null,
+    startedAt: 0, // when the mic opened, for the elapsed clock
+    clock: -1, // the last whole second written to the meta line
+    destination: "", // name of the session the words will be typed into; "" when none is focused
   };
+  const PLACEHOLDER = "Speak, then release ⌥";
   const hud = {
     root: $("#dictation"),
+    label: $("#dictation-label"),
+    meta: $("#dictation-meta"),
     text: $("#dictation-text"),
+    words: $("#dictation-words"),
     bars: [...document.querySelectorAll(".dictation-bars i")],
     hideTimer: 0,
+    watchdog: 0, // gives up when the engine answers a release with neither a final nor an error
   };
 
   const isModifierKey = (e) => e.key === "Meta" || e.key === "Alt";
   const chordDown = (e) => e.altKey && !e.metaKey && !e.ctrlKey && !e.shiftKey;
-  const tail = (text) => (text.length > 72 ? `…${text.slice(-72)}` : text);
+
+  // The newest words matter most while speaking, so keep the end of a long transcript and cut at a word.
+  function tail(text) {
+    if (text.length <= 240) return text;
+    const cut = text.slice(-240);
+    const space = cut.indexOf(" ");
+    return space > 0 ? cut.slice(space + 1) : cut;
+  }
+
+  const clockText = (seconds) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+  const listeningMeta = (seconds) => `${clockText(seconds)} · ${dictation.destination || "no session focused"}`;
 
   function playSound(name) {
     invoke("play_sound", { name: SOUNDS[name] }).catch(() => {});
   }
 
-  function setHud(mode, text) {
+  // The transcript is one line clipped at the start, so the newest words stay visible. Messages are the
+  // reverse: clipped at the end, so the first words stay readable.
+  function showWords(text, kind = "tail") {
+    hud.words.textContent = text;
+    hud.text.dataset.kind = kind;
+  }
+
+  // Changes the pill's state. Only the fields that are passed change. A state change cancels a pending hide.
+  function setHud(mode, { label, words, kind = "tail", meta, warn } = {}) {
+    clearTimeout(hud.hideTimer);
     hud.root.dataset.mode = mode;
     hud.root.classList.add("is-visible");
-    if (text !== undefined) hud.text.textContent = text;
+    if (warn !== undefined) hud.root.classList.toggle("is-warn", warn);
+    if (label !== undefined) hud.label.textContent = label;
+    if (words !== undefined) showWords(words, kind);
+    if (meta !== undefined) hud.meta.textContent = meta;
   }
 
   function hideHud(delay = 0) {
     clearTimeout(hud.hideTimer);
     hud.hideTimer = setTimeout(() => {
-      if (dictation.state !== "idle") return; // a new hold has started
+      if (dictation.state === "held") return; // a new hold has started
       dictation.shown = false;
       dictation.target = 0;
-      hud.root.dataset.mode = "idle"; // back to the dim dot, without the last mode's colour
-      hud.root.classList.remove("is-visible");
+      hud.root.dataset.mode = "idle"; // back to the dot, without the last mode's colour
+      hud.root.classList.remove("is-visible", "is-warn");
     }, delay);
   }
 
-  // The bars follow the real microphone level, with a small per-bar wobble so they feel alive.
+  // The bars follow the real microphone level, with a small per-bar wobble so they feel alive. The loop
+  // runs only while listening. Processing and done are styled in CSS, so the bars are left alone there.
   function animateHud() {
     dictation.frame = 0;
-    if (!dictation.shown) return;
+    if (!dictation.shown || hud.root.dataset.mode !== "listening") return;
     dictation.target *= 0.92; // decays between level events
     dictation.level += (dictation.target - dictation.level) * 0.3;
     const now = performance.now() / 1000;
     hud.bars.forEach((bar, i) => {
-      const weight = [0.55, 0.85, 1, 0.8, 0.6][i];
-      const wobble = 0.75 + 0.25 * Math.sin(now * 9 + i * 1.7);
-      const height = Math.max(0.14, Math.min(1, dictation.level * weight * wobble * 1.6));
+      const weight = [0.5, 0.85, 1, 0.85, 0.5][i];
+      const wobble = 0.8 + 0.2 * Math.sin(now * 8 + i * 1.9);
+      // The square root lifts quiet speech, which is most of what a mic hears, so the meter still moves.
+      const height = Math.max(0.16, Math.min(1, Math.sqrt(dictation.level) * weight * wobble * 1.3));
       bar.style.transform = `scaleY(${height.toFixed(3)})`;
     });
+    // The clock is read here, in the same frame loop, and written only when the second changes.
+    const seconds = Math.floor((Date.now() - dictation.startedAt) / 1000);
+    if (seconds !== dictation.clock) {
+      dictation.clock = seconds;
+      hud.meta.textContent = listeningMeta(seconds);
+    }
     dictation.frame = requestAnimationFrame(animateHud);
+  }
+
+  // The engine should answer a release with "final" or "error". If it answers with neither, the pill
+  // must not stay on "Transcribing" forever.
+  function armWatchdog() {
+    clearWatchdog();
+    hud.watchdog = setTimeout(() => {
+      hud.watchdog = 0;
+      setHud("error", { label: "No answer from speech", words: "Dictation timed out. Hold Option to try again.", kind: "message", warn: false });
+      hideHud(3000);
+    }, 8000);
+  }
+
+  function clearWatchdog() {
+    clearTimeout(hud.watchdog);
+    hud.watchdog = 0;
   }
 
   function beginDictation() {
     // Ignore the chord while typing in a text field that is not a terminal (rename, dialogs).
     const active = document.activeElement;
     if (active && active.matches("input, textarea") && !active.classList.contains("xterm-helper-textarea")) return;
+    clearWatchdog(); // a new hold ends the wait for the last transcript
     dictation.state = "held";
     dictation.timer = setTimeout(startListening, DICTATION_HOLD_DELAY);
   }
@@ -1139,7 +1194,19 @@
     if (dictation.state !== "held") return;
     dictation.recording = true;
     dictation.shown = true;
-    setHud("listening", "Listening…");
+    dictation.startedAt = Date.now();
+    dictation.clock = -1;
+    const card = focusedLiveCard();
+    const session = card && findSession(card.id);
+    dictation.destination = session ? session.name : "";
+    // Say where the words will go now, so a missing target is not discovered after a whole sentence.
+    setHud("listening", {
+      label: "Listening",
+      words: PLACEHOLDER,
+      kind: "message",
+      meta: listeningMeta(0),
+      warn: !session,
+    });
     playSound("start");
     if (!dictation.frame) animateHud();
     attempt("dictation_start").then((result) => {
@@ -1151,11 +1218,16 @@
     clearTimeout(dictation.timer);
     dictation.state = "idle";
     dictation.target = 0;
-    if (!dictation.recording) return; // released before the mic opened, so there is nothing to stop
+    if (!dictation.recording) {
+      // Released before the mic opened, or after an error already explained the failure.
+      if (dictation.shown) hideHud(2500);
+      return;
+    }
     dictation.recording = false;
     if (dictation.shown) {
-      setHud("processing", hud.text.textContent);
+      setHud("processing", { label: "Transcribing", words: hud.words.textContent, kind: hud.text.dataset.kind, meta: "" });
       playSound("stop");
+      armWatchdog();
     }
     attempt("dictation_stop");
   }
@@ -1164,6 +1236,7 @@
     const wasRecording = dictation.recording;
     if (dictation.state === "idle" && !wasRecording) return;
     clearTimeout(dictation.timer);
+    clearWatchdog();
     dictation.state = nextState;
     dictation.recording = false;
     dictation.shown = false;
@@ -1177,22 +1250,25 @@
   }
 
   function finishDictation(text) {
+    clearWatchdog();
     const spoken = text.trim();
     if (!spoken) {
-      hideHud();
+      setHud("error", { label: "Nothing heard", words: "Hold Option and speak a little longer", kind: "message", meta: "", warn: true });
+      hideHud(1800);
       return;
     }
     const card = focusedLiveCard();
     if (card) {
       // paste() honours bracketed paste, so newlines do not submit the prompt early.
       card.term.paste(spoken);
-      setHud("done", tail(spoken));
+      const session = findSession(card.id);
+      setHud("done", { label: `Typed into ${session ? session.name : "the session"}`, words: tail(spoken), kind: "tail", meta: "", warn: false });
       playSound("done");
-      hideHud(1200);
+      hideHud(1600);
     } else {
-      // Nothing to type into: leave the words on screen so they are not lost.
-      setHud("error", `${tail(spoken)}  ·  click a running session first`);
-      hideHud(4000);
+      // Nothing to type into: keep the words on screen so they are not lost.
+      setHud("error", { label: "Not typed", words: tail(spoken), kind: "tail", meta: "click a running session first", warn: true });
+      hideHud(4500);
     }
   }
 
@@ -1202,19 +1278,23 @@
         dictation.target = Math.min(1, event.value);
         break;
       case "partial":
-        if (dictation.shown) hud.text.textContent = tail(event.text);
+        if (dictation.shown) showWords(event.text ? tail(event.text) : PLACEHOLDER, event.text ? "tail" : "message");
         break;
       case "final":
         finishDictation(event.text || "");
         break;
       case "state":
-        if (event.state === "downloading" && dictation.shown) setHud("listening", "Downloading the speech model…");
+        if (event.state === "downloading" && dictation.shown) {
+          setHud("listening", { label: "Preparing speech", words: "Downloading the speech model. This happens once.", kind: "message" });
+        }
         break;
       case "error":
-        toast(event.message);
+        clearWatchdog();
+        dictation.recording = false; // the engine has closed the mic, so a release must not wait for a final
         dictation.target = 0;
-        if (dictation.shown) setHud("error", event.message);
-        if (dictation.state === "idle") hideHud(2500);
+        if (dictation.shown) setHud("error", { label: "Dictation unavailable", words: event.message, kind: "message", warn: false });
+        else toast(event.message);
+        if (dictation.state === "idle") hideHud(4000);
         break;
       case "exited":
         toast("Dictation stopped. It restarts on the next hold.");

@@ -18,6 +18,7 @@
   --accent-ink: #0f1424;
   --done: #4ac26b;
   --fail: #f06b6b;
+  --warn: #e5c07b;
   --claude: #d97757;
   --openai: #e6e6e9;
 
@@ -624,129 +625,212 @@ kbd {
 .toast.error { border-color: color-mix(in srgb, var(--fail) 45%, var(--line)); }
 .toast.ok { border-color: color-mix(in srgb, var(--done) 40%, var(--line)); }
 
-/* Dictation pill. Collapsed, it is a 6px dot at the right edge. While Option is held it opens into a
-   compact pill with a level meter and the live transcript. It lives inside this window. */
+/* Voice pill. Idle, it is a small dot in the middle of the toolbar. Holding Option opens it into a bar
+   with the state, the destination session, the newest words and a level meter. It sits over the empty
+   middle of the toolbar and ignores the pointer, so it never covers a terminal or blocks a window drag.
+   Width and height animate between fixed pixel values, because auto sizes do not transition. */
 .dictation {
   position: fixed;
-  right: 14px;
-  top: 50%;
+  left: calc(232px + (100vw - 232px) / 2); /* centred on the main column, not the window */
+  top: 26px; /* the middle of the 52px toolbar */
   z-index: 50;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   width: 6px;
   height: 6px;
-  padding: 0;
   overflow: hidden;
   border-radius: 999px;
   background: var(--dim);
   color: var(--text);
-  font: 12px/1 var(--font-ui);
+  font: 13px/1.3 var(--font-ui);
   pointer-events: none;
-  opacity: 0.5;
-  translate: 0 -50%;
+  opacity: 0.6;
+  translate: -50% -50%;
   transition:
-    width 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
-    height 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
-    padding 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    width 280ms var(--ease-out),
+    height 280ms var(--ease-out),
+    border-radius 280ms var(--ease-out),
+    padding 280ms var(--ease-out),
     background-color 200ms ease,
-    box-shadow 200ms ease,
+    box-shadow 240ms ease,
     opacity 200ms ease;
 }
 
 .dictation.is-visible {
-  width: min(260px, calc(100vw - 32px));
-  height: 26px;
-  padding: 0 12px 0 10px;
-  background: color-mix(in srgb, var(--card) 96%, transparent);
-  box-shadow: inset 0 0 0 1px var(--line), 0 6px 18px rgba(0, 0, 0, 0.28);
+  /* 232px sidebar and about 620px for the toolbar's title and buttons, so the pill never covers them. */
+  width: clamp(240px, calc(100vw - 852px), 560px);
+  height: 44px;
+  padding: 0 16px 0 10px;
+  border-radius: 22px;
+  background: color-mix(in srgb, var(--card) 94%, transparent);
+  box-shadow: inset 0 0 0 1px var(--line), 0 12px 32px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(16px);
   opacity: 1;
 }
 
-.dictation-dot {
+.dictation.is-visible[data-mode="listening"] { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fail) 45%, transparent), 0 12px 32px rgba(0, 0, 0, 0.45); }
+.dictation.is-visible[data-mode="done"] { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--done) 50%, transparent), 0 12px 32px rgba(0, 0, 0, 0.45); }
+.dictation.is-visible[data-mode="error"] { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fail) 45%, transparent), 0 12px 32px rgba(0, 0, 0, 0.45); }
+.dictation.is-visible.is-warn { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 50%, transparent), 0 12px 32px rgba(0, 0, 0, 0.45); }
+
+/* The contents fade with the frame. Hiding is immediate; showing waits for the frame to open. */
+.dictation > * { transition: opacity 180ms ease; }
+.dictation.is-visible > * { transition-delay: 80ms; }
+.dictation:not(.is-visible) > * { opacity: 0; }
+
+/* Badge: the icon for the current state. */
+.dictation-badge {
+  position: relative;
+  isolation: isolate;
   flex: none;
-  width: 6px;
-  height: 6px;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+  transition: background-color 200ms ease, color 200ms ease;
+}
+.dictation-badge > * { grid-area: 1 / 1; }
+.dictation-badge svg {
+  display: none;
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.dictation .badge-spinner {
+  display: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1.6px solid color-mix(in srgb, currentColor 22%, transparent);
+  border-top-color: currentColor;
+}
+.dictation[data-mode="listening"] .badge-mic,
+.dictation[data-mode="done"] .badge-check,
+.dictation[data-mode="error"] .badge-alert { display: block; }
+.dictation[data-mode="processing"] .badge-spinner { display: block; animation: dictation-spin 0.9s linear infinite; }
+
+.dictation[data-mode="listening"] .dictation-badge { background: color-mix(in srgb, var(--fail) 16%, transparent); color: var(--fail); }
+.dictation[data-mode="done"] .dictation-badge { background: color-mix(in srgb, var(--done) 18%, transparent); color: var(--done); }
+.dictation[data-mode="error"] .dictation-badge { background: color-mix(in srgb, var(--fail) 16%, transparent); color: var(--fail); }
+/* Listening with no session focused, or a "not typed" result: amber. Declared last so it wins. */
+.dictation.is-warn .dictation-badge { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+
+.dictation[data-mode="listening"] .dictation-badge::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
   border-radius: 50%;
   background: var(--fail);
+  animation: dictation-ring 1.6s ease-out infinite;
 }
 
-/* Collapsed: the root is the dot, so the children stay out of the way. */
-.dictation:not(.is-visible) .dictation-dot,
-.dictation:not(.is-visible) .dictation-bars,
-.dictation:not(.is-visible) .dictation-text {
-  width: 0;
-  opacity: 0;
-}
+.dictation[data-mode="done"] .badge-check,
+.dictation[data-mode="error"] .badge-alert { animation: dictation-pop 380ms var(--ease-out) both; }
 
-.dictation-bars {
-  flex: none;
+/* Text column: label and meta on one line, the transcript on the line below. */
+.dictation-main {
   display: flex;
-  align-items: center;
-  gap: 2px;
-  height: 14px;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
 }
-
-.dictation-bars i {
-  width: 2px;
-  height: 100%;
-  border-radius: 1px;
-  background: var(--accent);
-  transform: scaleY(0.2);
-  transform-origin: center;
+.dictation-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  line-height: 1.25;
 }
-
-.dictation-text {
+.dictation-label {
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.dictation-meta {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--muted);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+.dictation.is-warn .dictation-meta { color: var(--warn); }
+
+/* The transcript is one line in a flex row aligned to the end. Overflow clips at the start, so the
+   newest words stay in view. The left edge fades out. */
+.dictation-text {
+  display: flex;
+  justify-content: flex-end;
+  min-width: 0;
+  overflow: hidden;
+  line-height: 1.3;
+}
+.dictation-words {
+  flex: none;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.dictation-text[data-kind="tail"] .dictation-words { color: var(--text); }
+.dictation-text[data-kind="tail"] {
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 28px);
+  mask-image: linear-gradient(90deg, transparent, #000 28px);
+}
+/* Messages and placeholders keep their first words, and end with an ellipsis instead. */
+.dictation-text[data-kind="message"] { justify-content: flex-start; }
+.dictation-text[data-kind="message"] .dictation-words {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.dictation[data-mode="listening"] .dictation-dot {
-  animation: dictation-pulse 1.4s ease-out infinite;
+/* Level meter: five bars. JS sets their height while listening. CSS animates them while processing. */
+.dictation-bars {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 20px;
 }
-
-.dictation[data-mode="listening"] .dictation-text:not(:empty) {
-  color: var(--text);
-}
-
-.dictation[data-mode="processing"] .dictation-dot {
+.dictation-bars i {
+  width: 3px;
+  height: 100%;
+  border-radius: 2px;
   background: var(--accent);
+  transform: scaleY(0.16);
+  transform-origin: center;
 }
-
 .dictation[data-mode="processing"] .dictation-bars i {
-  background: var(--muted);
-  animation: dictation-shimmer 0.9s ease-in-out infinite;
+  background: var(--dim);
+  animation: dictation-shimmer 1s ease-in-out infinite;
 }
+.dictation[data-mode="processing"] .dictation-bars i:nth-child(2n) { animation-delay: 0.15s; }
+.dictation[data-mode="done"] .dictation-bars,
+.dictation[data-mode="error"] .dictation-bars { display: none; }
 
-.dictation[data-mode="processing"] .dictation-bars i:nth-child(2n) {
-  animation-delay: 0.15s;
+@keyframes dictation-ring {
+  0% { transform: scale(0.8); opacity: 0.5; }
+  100% { transform: scale(1.8); opacity: 0; }
 }
-
-.dictation[data-mode="done"] .dictation-dot {
-  background: var(--done);
+@keyframes dictation-pop {
+  from { transform: scale(0.4); opacity: 0; }
 }
-
-.dictation[data-mode="done"] .dictation-text {
-  color: var(--text);
+@keyframes dictation-spin {
+  to { transform: rotate(360deg); }
 }
-
-.dictation[data-mode="error"] .dictation-dot {
-  background: var(--fail);
-}
-
-.dictation[data-mode="error"] .dictation-bars {
-  display: none;
-}
-
-@keyframes dictation-pulse {
-  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--fail) 50%, transparent); }
-  70% { box-shadow: 0 0 0 6px transparent; }
-  100% { box-shadow: 0 0 0 0 transparent; }
-}
-
 @keyframes dictation-shimmer {
   0%, 100% { transform: scaleY(0.25); }
   50% { transform: scaleY(0.9); }
@@ -754,11 +838,14 @@ kbd {
 
 @media (prefers-reduced-motion: reduce) {
   .dictation,
-  .dictation-dot,
-  .dictation-bars i {
-    transition: none;
-    animation: none;
-  }
+  .dictation > *,
+  .dictation-badge { transition: none; }
+  .dictation[data-mode="listening"] .dictation-badge::after,
+  .dictation[data-mode="done"] .badge-check,
+  .dictation[data-mode="error"] .badge-alert,
+  .dictation[data-mode="processing"] .dictation-bars i { animation: none; }
+  /* The spinner stays as a static arc, so "working" is still visible without motion. */
+  .dictation[data-mode="processing"] .badge-spinner { animation: none; }
 }
 
 /* Motion. Entrances decelerate, exits accelerate, and each rule below has a reduced-motion

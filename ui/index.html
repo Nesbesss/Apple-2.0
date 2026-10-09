@@ -58,11 +58,23 @@
   <div id="parking" hidden></div>
   <div id="toasts" class="toasts" aria-live="polite"></div>
 
-  <!-- Dictation pill: a dim dot at the right edge, expanded while Option+Command is held. -->
-  <div class="dictation" id="dictation" role="status" aria-live="polite" data-mode="idle">
-    <span class="dictation-dot" aria-hidden="true"></span>
+  <!-- Voice pill: a small dot in the toolbar while idle. Holding Option opens it into a bar with the state,
+       the destination session, the newest words and a level meter. It ignores the pointer. -->
+  <div class="dictation" id="dictation" data-mode="idle">
+    <span class="dictation-badge" aria-hidden="true">
+      <svg class="badge-mic" viewBox="0 0 16 16"><rect x="5.5" y="2" width="5" height="7.5" rx="2.5"/><path d="M3.5 7.5a4.5 4.5 0 0 0 9 0M8 12v2"/></svg>
+      <svg class="badge-check" viewBox="0 0 16 16"><path d="M3.5 8.5 6.5 11.5 12.5 4.5"/></svg>
+      <svg class="badge-alert" viewBox="0 0 16 16"><path d="M8 3.5v5.25M8 11.75v.25"/></svg>
+      <span class="badge-spinner"></span>
+    </span>
+    <span class="dictation-main">
+      <span class="dictation-head">
+        <span class="dictation-label" id="dictation-label" role="status" aria-live="polite"></span>
+        <span class="dictation-meta" id="dictation-meta" aria-hidden="true"></span>
+      </span>
+      <span class="dictation-text" id="dictation-text" data-kind="tail"><span class="dictation-words" id="dictation-words"></span></span>
+    </span>
     <span class="dictation-bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
-    <span class="dictation-text" id="dictation-text"></span>
   </div>
 
   <dialog id="new-session" class="dialog">
