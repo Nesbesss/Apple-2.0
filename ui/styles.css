@@ -20,6 +20,7 @@
   --fail: #f06b6b;
   --claude: #d97757;
   --openai: #e6e6e9;
+  --selection: rgba(124, 156, 255, 0.28);
 
   --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
   --font-mono: "SF Mono", Menlo, monospace;
@@ -158,7 +159,6 @@ kbd {
 }
 
 .sidebar-foot { padding: 8px; border-top: 1px solid var(--line); }
-.sidebar-foot .btn { width: 100%; height: 28px; font-size: 12px; }
 
 .group-list {
   flex: 1;
@@ -617,7 +617,196 @@ kbd {
 .toast.error { border-color: color-mix(in srgb, var(--fail) 45%, var(--line)); }
 .toast.ok { border-color: color-mix(in srgb, var(--done) 40%, var(--line)); }
 
-/* Dictation pill. Collapsed, it is a 6px dot at the right edge. While Option is held it opens into a
+/* Navigation: Home sits above the groups, Settings sits in the footer */
+
+.nav { padding: 0 8px 6px; }
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 30px;
+  padding: 0 10px 0 12px;
+  border-radius: 6px;
+  color: var(--muted);
+  font-weight: 500;
+  text-align: left;
+  transition: color var(--ease), background-color var(--ease);
+}
+.nav-item:hover { background: var(--hover); color: var(--text); }
+.nav-item.active { background: var(--selected); color: var(--text); }
+.nav-icon { display: inline-flex; flex: none; width: 14px; height: 14px; }
+.nav-icon svg { width: 100%; height: 100%; display: block; }
+
+/* Home and Settings share one page layout */
+
+.home, .settings { flex: 1; min-height: 0; overflow-y: auto; }
+.page { max-width: 920px; margin: 0 auto; padding: 30px 36px 40px; }
+.page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.page-title { font-size: 22px; font-weight: 650; letter-spacing: -0.02em; }
+.page-sub { margin-top: 4px; color: var(--muted); font-size: 13px; }
+.page-actions { display: flex; gap: 8px; flex: none; }
+.page-block { margin-top: 30px; }
+.block-title {
+  margin-bottom: 10px;
+  color: var(--dim);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.block-head { display: flex; align-items: center; justify-content: space-between; }
+.block-head .block-title { margin-bottom: 0; }
+.page-hint { margin-top: 26px; color: var(--dim); font-size: 12px; }
+.home-empty { padding: 14px 2px; color: var(--muted); }
+.setting-hint { max-width: 620px; margin-bottom: 10px; color: var(--muted); line-height: 1.5; }
+
+/* Home: groups as cards, live and past sessions as rows */
+
+.group-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+.group-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-height: 72px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--card);
+  text-align: left;
+  transition: border-color var(--ease), background-color var(--ease);
+}
+.group-card:hover { border-color: var(--selected); background: var(--hover); }
+.group-card.current { border-color: color-mix(in srgb, var(--accent) 60%, transparent); }
+.group-card-name { font-weight: 600; }
+.group-card-meta { color: var(--muted); font-size: 12px; }
+.group-card-new { flex-direction: row; align-items: center; justify-content: center; gap: 8px; border-style: dashed; color: var(--muted); }
+.group-card-new:hover { color: var(--text); }
+.group-card-new svg { width: 14px; height: 14px; }
+
+.row-list { display: flex; flex-direction: column; gap: 6px; }
+.row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 54px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--card);
+}
+.row-button { width: 100%; text-align: left; transition: border-color var(--ease), background-color var(--ease); }
+.row-button:hover { border-color: var(--selected); background: var(--hover); }
+.row .logo { width: 14px; height: 14px; }
+.row .btn { flex: none; }
+.row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.row-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.row-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11.5px; }
+.row-state { display: inline-flex; flex: none; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+
+.resume-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 10px; }
+#resume-filter { display: inline-grid; grid-template-columns: repeat(3, auto); }
+#resume-filter button { padding: 0 12px; }
+#resume-search { flex: 1; min-width: 180px; max-width: 320px; }
+.resume-into { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+.resume-into select { width: auto; min-width: 140px; }
+
+/* Settings: choices, swatches, color fields, and switches */
+
+.choice-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.choice {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--muted);
+  transition: color var(--ease), border-color var(--ease);
+}
+.choice:hover { color: var(--text); border-color: var(--selected); }
+.choice[aria-checked="true"] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--card));
+  color: var(--text);
+}
+.choice-symbol { font-size: 15px; line-height: 1; }
+.surface-preview {
+  width: 26px;
+  height: 18px;
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 1px var(--line);
+  background: linear-gradient(90deg, var(--p-sidebar) 0 40%, var(--p-card) 40% 75%, var(--p-canvas) 75%);
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 48px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+.setting-label { display: flex; flex-direction: column; gap: 2px; }
+.setting-label small { color: var(--muted); font-size: 12px; }
+.setting-control { display: flex; align-items: center; gap: 12px; flex: none; }
+.setting-footer { display: flex; justify-content: flex-end; margin-top: 14px; }
+.swatches { display: flex; gap: 8px; }
+.swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--swatch);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+}
+.swatch[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--canvas), 0 0 0 3.5px var(--swatch); }
+.color-input {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 28px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+.color-input::-webkit-color-swatch-wrapper { padding: 0; }
+.color-input::-webkit-color-swatch { border: 1px solid var(--line); border-radius: 6px; }
+.link { color: var(--muted); font-size: 12px; text-decoration: underline; text-underline-offset: 2px; }
+.link:hover { color: var(--text); }
+.link:disabled { opacity: 0.4; pointer-events: none; }
+
+.switch {
+  position: relative;
+  flex: none;
+  width: 34px;
+  height: 20px;
+  border-radius: 999px;
+  background: var(--selected);
+  transition: background-color var(--ease);
+}
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text);
+  transition: transform var(--ease);
+}
+.switch[aria-checked="true"] { background: var(--accent); }
+.switch[aria-checked="true"]::after { transform: translateX(14px); background: var(--accent-ink); }
+@media (prefers-reduced-motion: reduce) {
+  .switch, .switch::after { transition: none; }
+}
+
+/* Dictation pill.Collapsed, it is a 6px dot at the right edge. While Option is held it opens into a
    compact pill with a level meter and the live transcript. It lives inside this window. */
 .dictation {
   position: fixed;

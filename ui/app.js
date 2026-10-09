@@ -29,6 +29,8 @@
     copy: stroke('<rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M3.5 10.5v-6a1 1 0 0 1 1-1h6"/>'),
     stop: '<svg viewBox="0 0 16 16" fill="currentColor"><rect x="4" y="4" width="8" height="8" rx="1.5"/></svg>',
     deck: stroke('<rect x="5" y="2.5" width="8.5" height="7" rx="1.5"/><path d="M3 6v6.5a1 1 0 0 0 1 1h7.5"/>'),
+    home: stroke('<path d="M2.75 7.5 8 3.25l5.25 4.25V13a.75.75 0 0 1-.75.75H9.5V10h-3v3.75H3.5A.75.75 0 0 1 2.75 13z"/>'),
+    gear: stroke('<circle cx="8" cy="8" r="2"/><path d="M8 1.75v1.7M8 12.55v1.7M1.75 8h1.7M12.55 8h1.7M3.55 3.55l1.2 1.2M11.25 11.25l1.2 1.2M3.55 12.45l1.2-1.2M11.25 4.75l1.2-1.2"/>'),
   };
 
   // ----------------------------------------------------------------- state
@@ -46,6 +48,11 @@
     done: new Set(), // ids whose work finished while the user was not looking
     dragId: null, // session id being dragged in the sidebar
     newKind: "claude",
+    view: "home", // "home" | "group" | "settings"
+    transcripts: null, // past sessions from disk; null until the first load finishes
+    resumeFilter: "all", // "all" | "claude" | "codex"
+    resumeQuery: "",
+    resumeGroup: 0, // index of the group a resumed session is filed under
   };
   const cards = new Map(); // id -> card entry (DOM, terminal, size bookkeeping)
   const pendingData = new Map(); // id -> bytes that arrived before the card existed
@@ -66,10 +73,31 @@
     sessionDialog: $("#new-session"),
     confirmDialog: $("#confirm"),
     promptDialog: $("#prompt"),
+    toolbar: $("#toolbar"),
+    stage: $("#stage"),
+    home: $("#home"),
+    homeSub: $("#home-sub"),
+    homeHint: $("#home-hint"),
+    liveBlock: $("#home-live"),
+    liveList: $("#live-list"),
+    groupCards: $("#group-cards"),
+    resumeList: $("#resume-list"),
+    resumeGroup: $("#resume-group"),
+    resumeSearch: $("#resume-search"),
+    resumeFilter: $("#resume-filter"),
+    settings: $("#settings"),
+    hotkeyChoices: $("#hotkey-choices"),
+    accentSwatches: $("#accent-swatches"),
+    accentCustom: $("#accent-custom"),
+    surfaceChoices: $("#surface-choices"),
+    statusColors: $("#status-colors"),
+    alertsToggle: $("#alerts-toggle"),
   };
 
   const groups = () => state.store.groups;
   const currentGroup = () => groups()[state.selected];
+  // The group whose cards are on screen. Home and Settings show no cards, so they get no group.
+  const visibleGroup = () => (state.view === "group" ? currentGroup() : undefined);
   const allSessions = () => groups().flatMap((g) => g.sessions);
   const findSession = (id) => allSessions().find((s) => s.id === id);
 
@@ -81,6 +109,102 @@
       try { localStorage.setItem(key, value); } catch { /* storage unavailable */ }
     },
   };
+
+  // -------------------------------------------------------------- settings
+
+  // Settings are kept in localStorage. Each read and write is guarded, so unavailable storage
+  // falls back to the defaults instead of breaking the app.
+  const SETTINGS_KEY = "settings";
+  const HEX = /^#[0-9a-f]{6}$/i;
+  const DEFAULT_SETTINGS = { accent: "#7c9cff", surface: "default", done: "#4ac26b", fail: "#f06b6b", claude: "#d97757", hotkey: "alt" };
+  const SURFACES = {
+    default: { label: "Default", canvas: "#121213", sidebar: "#171718", card: "#1c1c1e" },
+    midnight: { label: "Midnight", canvas: "#0b0e18", sidebar: "#10141f", card: "#151a29" },
+    graphite: { label: "Graphite", canvas: "#19191b", sidebar: "#1f1f22", card: "#26262a" },
+  };
+  const ACCENTS = [
+    { label: "Blue", value: "#7c9cff" },
+    { label: "Violet", value: "#b08cff" },
+    { label: "Teal", value: "#4fd1c5" },
+    { label: "Amber", value: "#f5b84b" },
+    { label: "Rose", value: "#ff7a9c" },
+    { label: "Lime", value: "#b5e061" },
+  ];
+  const STATUS_COLORS = [
+    { key: "done", label: "Done" },
+    { key: "fail", label: "Failed" },
+    { key: "claude", label: "Claude logo" },
+  ];
+  // Voice modes, by the modifier keys that are held. Each one is a hold-to-talk chord.
+  const HOTKEYS = {
+    alt: { label: "Option", symbol: "⌥", keys: ["alt"] },
+    ctrl: { label: "Control", symbol: "⌃", keys: ["ctrl"] },
+    "alt+meta": { label: "Option and Command", symbol: "⌥⌘", keys: ["alt", "meta"] },
+    "ctrl+alt": { label: "Control and Option", symbol: "⌃⌥", keys: ["ctrl", "alt"] },
+  };
+  const MODIFIER_FLAG = { alt: "altKey", ctrl: "ctrlKey", meta: "metaKey", shift: "shiftKey" };
+
+  let settings = { ...DEFAULT_SETTINGS };
+
+  function loadSettings() {
+    let saved = {};
+    try { saved = JSON.parse(stored.get(SETTINGS_KEY)) || {}; } catch { saved = {}; }
+    const pick = (key, valid) => (valid(saved[key]) ? saved[key] : DEFAULT_SETTINGS[key]);
+    const isColor = (value) => typeof value === "string" && HEX.test(value);
+    settings = {
+      accent: pick("accent", isColor),
+      surface: pick("surface", (value) => Object.keys(SURFACES).includes(value)),
+      done: pick("done", isColor),
+      fail: pick("fail", isColor),
+      claude: pick("claude", isColor),
+      hotkey: pick("hotkey", (value) => Object.keys(HOTKEYS).includes(value)),
+    };
+  }
+
+  function saveSettings() {
+    stored.set(SETTINGS_KEY, JSON.stringify(settings));
+  }
+
+  const hexToRgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+
+  // Dark text on light colours, light text on dark ones.
+  function inkFor(hex) {
+    const [r, g, b] = hexToRgb(hex);
+    return 0.299 * r + 0.587 * g + 0.114 * b > 150 ? "#0f1424" : "#ffffff";
+  }
+
+  // Writes the chosen colours onto the CSS tokens. Open terminals take the new palette too.
+  function applyColors() {
+    const surface = SURFACES[settings.surface];
+    const [r, g, b] = hexToRgb(settings.accent);
+    const style = document.documentElement.style;
+    style.setProperty("--accent", settings.accent);
+    style.setProperty("--accent-ink", inkFor(settings.accent));
+    style.setProperty("--selection", `rgba(${r}, ${g}, ${b}, 0.28)`);
+    style.setProperty("--canvas", surface.canvas);
+    style.setProperty("--sidebar", surface.sidebar);
+    style.setProperty("--card", surface.card);
+    style.setProperty("--done", settings.done);
+    style.setProperty("--fail", settings.fail);
+    style.setProperty("--claude", settings.claude);
+    const theme = terminalOptions().theme;
+    cards.forEach((card) => { card.term.options.theme = theme; });
+  }
+
+  // A colour picker fires many input events while it is open, so these do not re-render the page.
+  function setColor(key, value) {
+    settings[key] = value;
+    saveSettings();
+    applyColors();
+  }
+
+  function setSetting(key, value) {
+    settings[key] = value;
+    saveSettings();
+    applyColors();
+    if (state.view === "settings") renderSettings();
+    if (state.view === "home") renderHomeHint();
+  }
 
   // --------------------------------------------------------------- helpers
 
@@ -169,7 +293,7 @@
   }
 
   function isOnScreen(id) {
-    const group = currentGroup();
+    const group = visibleGroup();
     if (!group || !group.sessions.some((s) => s.id === id)) return false;
     return !state.maximizedId || state.maximizedId === id;
   }
@@ -198,7 +322,7 @@
   function announceDone(id) {
     const session = findSession(id);
     if (!session || document.hasFocus() || !alertsOn()) return;
-    invoke("notify", { title: "Session Deck", body: `${session.name} finished` }).catch(() => {});
+    invoke("notify", { title: "Nesa", body: `${session.name} finished` }).catch(() => {});
   }
 
   async function refreshStatus(ids) {
@@ -229,7 +353,7 @@
         foreground: css("--text"),
         cursor: css("--accent"),
         cursorAccent: card,
-        selectionBackground: "rgba(124, 156, 255, 0.28)",
+        selectionBackground: css("--selection"),
         scrollbarSliderBackground: "rgba(139, 139, 148, 0.18)",
         scrollbarSliderHoverBackground: "rgba(139, 139, 148, 0.32)",
         scrollbarSliderActiveBackground: "rgba(139, 139, 148, 0.45)",
@@ -246,7 +370,7 @@
   // Returns false for keys xterm must not forward to the shell. Every app shortcut listed in
   // onKeyDown belongs here too, or the shell would receive it as well.
   function handleTermKey(id, e) {
-    if (e.metaKey && (e.key === "n" || e.key === "[" || e.key === "]" || e.key === "j" || e.key === "Enter" || /^[1-9]$/.test(e.key))) return false;
+    if (e.metaKey && (e.key === "n" || e.key === "[" || e.key === "]" || e.key === "j" || e.key === "Enter" || e.key === "," || /^[0-9]$/.test(e.key))) return false;
     if (e.key === "Enter" && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
       if (e.type === "keydown") invoke("write_pty", { id, data: "\x1b\r" }).catch(() => {});
       return false; // ESC + CR makes Claude Code insert a newline
@@ -381,10 +505,11 @@
       else delete dot.dataset.state;
     });
     updateSummary();
+    if (state.view === "home") renderHomeStatus();
   }
 
   function updateSummary() {
-    const group = currentGroup();
+    const group = visibleGroup();
     const states = (group ? group.sessions : []).map((s) => stateOf(s.id));
     const chip = (word) => {
       const n = states.filter((st) => st === word).length;
@@ -535,6 +660,7 @@
   }
 
   // Selects the session's group if needed, then brings its card to the front.
+  // Opens the group that holds session `id` and focuses its card. Also leaves Home and Settings.
   function focusSession(id) {
     const index = groups().findIndex((g) => g.sessions.some((s) => s.id === id));
     if (index < 0) return;
@@ -546,6 +672,7 @@
     } else if (state.maximizedId) {
       state.maximizedId = id;
     }
+    state.view = "group";
     state.focusedId = id;
     renderAll();
     focusCard(id);
@@ -577,10 +704,28 @@
 
   // ---------------------------------------------------------------- render
 
+  // The view comes first: the grid is measured by its layout, so it must be shown before it renders.
   function renderAll() {
+    renderView();
     renderSidebar();
     renderToolbar();
     renderGrid();
+  }
+
+  function renderView() {
+    const view = state.view;
+    el.toolbar.hidden = view !== "group";
+    el.stage.hidden = view !== "group";
+    el.home.hidden = view !== "home";
+    el.settings.hidden = view !== "settings";
+    document.querySelectorAll("[data-view]").forEach((node) => {
+      const active = node.dataset.view === view;
+      node.classList.toggle("active", active);
+      if (active) node.setAttribute("aria-current", "page");
+      else node.removeAttribute("aria-current");
+    });
+    if (view === "home") renderHome();
+    if (view === "settings") renderSettings();
   }
 
   function renderSidebar() {
@@ -603,7 +748,7 @@
           })
         : h("span", { class: "group-name" }, group.name);
       const header = h("div", {
-        class: `group-row${index === state.selected ? " selected" : ""}`,
+        class: `group-row${index === state.selected && state.view === "group" ? " selected" : ""}`,
         role: "button",
         onclick: () => selectGroup(index),
         ondblclick: () => startRename(index),
@@ -695,7 +840,7 @@
   }
 
   function renderGrid() {
-    const group = currentGroup();
+    const group = visibleGroup();
     const sessions = group ? group.sessions : [];
     const maximized = sessions.find((s) => s.id === state.maximizedId);
     if (!maximized) state.maximizedId = null;
@@ -745,13 +890,20 @@
 
   // ---------------------------------------------------------------- groups
 
+  // Shows group `index`. From Home or Settings the same group still has to open, so only the
+  // group view itself is an early return.
   function selectGroup(index) {
-    if (index === state.selected || !groups()[index]) return;
-    state.selected = index;
-    state.maximizedId = null;
-    state.focusedId = null;
-    state.renaming = null;
-    stored.set("selectedGroup", String(index));
+    if (!groups()[index]) return;
+    const changed = index !== state.selected;
+    if (!changed && state.view === "group") return;
+    state.view = "group";
+    if (changed) {
+      state.selected = index;
+      state.maximizedId = null;
+      state.focusedId = null;
+      state.renaming = null;
+      stored.set("selectedGroup", String(index));
+    }
     renderAll();
     focusCard(state.focusedId);
   }
@@ -791,6 +943,7 @@
     const result = await attempt("create_group", { name: `Group ${n}` });
     if (!result.ok) return;
     state.selected = result.value.groups.length - 1;
+    state.view = "group";
     state.maximizedId = null;
     state.focusedId = null;
     state.renaming = state.selected;
@@ -1012,6 +1165,7 @@
       state.status[session.id] = { running: true, exited: false, working: false };
       state.focusedId = session.id;
       state.maximizedId = null;
+      state.view = "group";
       el.sessionDialog.close();
       applyStore(await invoke("load_store"));
       focusCard(session.id);
@@ -1021,10 +1175,244 @@
     }
   }
 
+  // ---------------------------------------------------------------- views
+
+  // Home, Settings, or a group. Only one is on screen, and cards outside the group view stay parked.
+  function showView(view) {
+    if (state.view === view && view !== "home") return;
+    state.view = view;
+    renderAll();
+    if (view === "home") loadTranscripts();
+  }
+
+  const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  const folderName = (path) => path.split("/").filter(Boolean).pop() || path;
+
+  function timeAgo(ms) {
+    if (!ms) return "";
+    const seconds = Math.max(0, (Date.now() - ms) / 1000);
+    if (seconds < 60) return "just now";
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+    if (seconds < 86400 * 14) return `${Math.floor(seconds / 86400)}d ago`;
+    return new Date(ms).toLocaleDateString();
+  }
+
+  // ----------------------------------------------------------------- home
+
+  function renderHome() {
+    renderHomeStatus();
+    renderHomeHint();
+    renderResumeGroups();
+    renderResumeList();
+  }
+
+  function renderHomeStatus() {
+    const attention = [];
+    const all = allSessions();
+    all.forEach((session) => {
+      const st = stateOf(session.id);
+      if (st === "done" || st === "working") attention.push({ session, st });
+    });
+    const working = attention.filter((item) => item.st === "working").length;
+    const done = attention.filter((item) => item.st === "done").length;
+    const parts = [`${plural(all.length, "session")} across ${plural(groups().length, "group")}`];
+    if (working) parts.push(`${working} working`);
+    if (done) parts.push(`${done} finished`);
+    el.homeSub.textContent = parts.join(" · ");
+
+    // Finished sessions come first: they are waiting for the user.
+    attention.sort((a, b) => (a.st === b.st ? 0 : a.st === "done" ? -1 : 1));
+    el.liveBlock.hidden = attention.length === 0;
+    el.liveList.replaceChildren(...attention.map((item) => liveRow(item.session, item.st)));
+    el.groupCards.replaceChildren(
+      ...groups().map((group, index) => groupCard(group, index)),
+      h("button", { class: "group-card group-card-new", type: "button", onclick: createGroup }, icon("plus"), h("span", {}, "New group")));
+  }
+
+  function renderHomeHint() {
+    el.homeHint.textContent = `Hold ${hotkey().symbol} to talk to a running session. The voice-mode keys are set in Settings.`;
+  }
+
+  function liveRow(session, st) {
+    const index = groups().findIndex((g) => g.sessions.some((s) => s.id === session.id));
+    return h("button", { class: "row row-button", type: "button", onclick: () => focusSession(session.id) },
+      logo(session.kind),
+      h("span", { class: "row-main" },
+        h("span", { class: "row-title" }, session.name),
+        h("span", { class: "row-meta" }, `${groups()[index].name} · ${shortPath(session.cwd)}`)),
+      h("span", { class: "row-state" }, h("span", { class: "dot", "data-state": st }), STATE_WORD[st]));
+  }
+
+  function groupCard(group, index) {
+    const count = (word) => group.sessions.filter((s) => stateOf(s.id) === word).length;
+    const parts = [plural(group.sessions.length, "session")];
+    if (count("working")) parts.push(`${count("working")} working`);
+    if (count("done")) parts.push(`${count("done")} finished`);
+    return h("button", { class: `group-card${index === state.selected ? " current" : ""}`, type: "button", onclick: () => selectGroup(index) },
+      h("span", { class: "group-card-name" }, group.name),
+      h("span", { class: "group-card-meta" }, parts.join(" · ")));
+  }
+
+  // ------------------------------------------------------------- resume
+
+  // Past sessions come from the agents' own transcripts, so they include ones started outside the deck.
+  async function loadTranscripts() {
+    const result = await attempt("list_transcripts");
+    if (result.ok) state.transcripts = result.value;
+    else if (!state.transcripts) state.transcripts = [];
+    if (state.view === "home") renderResumeList();
+  }
+
+  function renderResumeGroups() {
+    if (state.resumeGroup >= groups().length) state.resumeGroup = state.selected;
+    el.resumeGroup.replaceChildren(...groups().map((group, index) => h("option", { value: String(index) }, group.name)));
+    el.resumeGroup.value = String(state.resumeGroup);
+    el.resumeFilter.querySelectorAll("button").forEach((btn) =>
+      btn.setAttribute("aria-checked", String(btn.dataset.filter === state.resumeFilter)));
+  }
+
+  function renderResumeList() {
+    if (!state.transcripts) {
+      el.resumeList.replaceChildren(h("p", { class: "home-empty" }, "Looking for past sessions…"));
+      return;
+    }
+    const query = state.resumeQuery.trim().toLowerCase();
+    const shown = state.transcripts.filter((item) =>
+      (state.resumeFilter === "all" || item.kind === state.resumeFilter) &&
+      (!query || `${item.title} ${item.cwd}`.toLowerCase().includes(query)));
+    if (!shown.length) {
+      el.resumeList.replaceChildren(h("p", { class: "home-empty" }, state.transcripts.length
+        ? "No sessions match that search."
+        : "No past Claude or Codex sessions were found."));
+      return;
+    }
+    el.resumeList.replaceChildren(...shown.map((item) => resumeRow(item)));
+  }
+
+  function resumeRow(item) {
+    const name = item.title || folderName(item.cwd);
+    let action;
+    if (item.deck_session) {
+      action = h("button", { class: "btn btn-outline", type: "button", onclick: () => focusSession(item.deck_session) }, "Open");
+    } else if (item.busy) {
+      action = h("button", { class: "btn btn-outline", type: "button", disabled: true, title: "It is running in another terminal. Stop it there first." }, "In use");
+    } else {
+      action = h("button", { class: "btn btn-primary", type: "button", onclick: (e) => resumeTranscript(item, e.currentTarget) }, "Resume");
+    }
+    return h("div", { class: "row", title: item.cwd },
+      logo(item.kind),
+      h("span", { class: "row-main" },
+        h("span", { class: "row-title" }, name),
+        h("span", { class: "row-meta" }, `${shortPath(item.cwd)} · ${timeAgo(item.updated)}`)),
+      action);
+  }
+
+  // Starts the past session in the chosen group, then opens it. The backend returns an existing
+  // session instead when the deck already holds this transcript.
+  async function resumeTranscript(item, button) {
+    button.disabled = true;
+    button.textContent = "Resuming…";
+    const started = await attempt("resume_session", { groupIndex: state.resumeGroup, kind: item.kind, agentId: item.id });
+    if (!started.ok) {
+      button.disabled = false;
+      button.textContent = "Resume";
+      return;
+    }
+    const loaded = await attempt("load_store");
+    if (!loaded.ok) return;
+    applyStore(loaded.value);
+    await refreshStatus([started.value.id]);
+    focusSession(started.value.id);
+    loadTranscripts();
+  }
+
+  // --------------------------------------------------------------- settings
+
+  function renderSettings() {
+    el.hotkeyChoices.replaceChildren(...Object.keys(HOTKEYS).map((key) =>
+      choice(key === settings.hotkey, () => setSetting("hotkey", key),
+        h("span", { class: "choice-symbol" }, HOTKEYS[key].symbol), HOTKEYS[key].label)));
+
+    el.accentSwatches.replaceChildren(...ACCENTS.map((accent) => h("button", {
+      class: "swatch",
+      type: "button",
+      title: accent.label,
+      "aria-label": `${accent.label} accent`,
+      "aria-pressed": String(settings.accent === accent.value),
+      style: `--swatch: ${accent.value}`,
+      onclick: () => setSetting("accent", accent.value),
+    })));
+    el.accentCustom.value = settings.accent;
+
+    el.surfaceChoices.replaceChildren(...Object.keys(SURFACES).map((key) => {
+      const surface = SURFACES[key];
+      return choice(key === settings.surface, () => setSetting("surface", key),
+        h("span", { class: "surface-preview", style: `--p-canvas: ${surface.canvas}; --p-sidebar: ${surface.sidebar}; --p-card: ${surface.card}` }),
+        surface.label);
+    }));
+
+    el.statusColors.replaceChildren(...STATUS_COLORS.map(({ key, label }) => colorRow(key, label)));
+    el.alertsToggle.setAttribute("aria-checked", String(alertsOn()));
+  }
+
+  // A radio-style option. The checked one is outlined.
+  function choice(checked, onSelect, ...content) {
+    return h("button", { class: "choice", type: "button", role: "radio", "aria-checked": String(checked), onclick: onSelect }, ...content);
+  }
+
+  // Dragging in the picker fires input events, so those only apply the color. The page re-renders
+  // once the picker closes (change), which keeps the open picker alive while the user drags.
+  function colorRow(key, label) {
+    const value = settings[key];
+    const fallback = DEFAULT_SETTINGS[key];
+    return h("div", { class: "setting-row" },
+      h("span", { class: "setting-label" }, label),
+      h("div", { class: "setting-control" },
+        h("input", {
+          class: "color-input",
+          type: "color",
+          value,
+          "aria-label": `${label} color`,
+          oninput: (e) => setColor(key, e.target.value),
+          onchange: (e) => setSetting(key, e.target.value),
+        }),
+        h("button", { class: "link", type: "button", disabled: value === fallback, onclick: () => setSetting(key, fallback) }, "Reset")));
+  }
+
+  function resetColors() {
+    for (const key of ["accent", "surface", "done", "fail", "claude"]) settings[key] = DEFAULT_SETTINGS[key];
+    saveSettings();
+    applyColors();
+    renderSettings();
+  }
+
+  // Navigation, the Home actions, and the Settings controls. Called once from bindUi.
+  function bindHomeAndSettings() {
+    document.querySelectorAll("[data-view]").forEach((node) =>
+      node.addEventListener("click", () => showView(node.dataset.view)));
+    $("#home-claude").addEventListener("click", () => openSessionDialog("claude"));
+    $("#home-codex").addEventListener("click", () => openSessionDialog("codex"));
+    $("#resume-refresh").addEventListener("click", loadTranscripts);
+    el.resumeSearch.addEventListener("input", (e) => {
+      state.resumeQuery = e.target.value;
+      renderResumeList();
+    });
+    el.resumeGroup.addEventListener("change", (e) => { state.resumeGroup = Number(e.target.value); });
+    el.resumeFilter.querySelectorAll("button").forEach((btn) => btn.addEventListener("click", () => {
+      state.resumeFilter = btn.dataset.filter;
+      renderResumeGroups();
+      renderResumeList();
+    }));
+    el.accentCustom.addEventListener("input", (e) => setColor("accent", e.target.value));
+    el.accentCustom.addEventListener("change", (e) => setSetting("accent", e.target.value));
+    $("#colors-reset").addEventListener("click", resetColors);
+  }
+
   // ------------------------------------------------------------- dictation
 
-  // Hold Option to talk; release to type the words into the focused session.
-  // The mic opens after a short hold, so a quick Option tap or an Option+key shortcut does nothing.
+  // Hold the voice-mode keys to talk; release to type the words into the focused session.
+  // The mic opens after a short hold, so a quick tap or a shortcut that uses the keys does nothing.
   const DICTATION_HOLD_DELAY = 180; // ms of hold before the mic opens
   // macOS system sounds, played natively by the backend.
   const SOUNDS = { start: "Tink", stop: "Pop", done: "Glass" };
@@ -1045,8 +1433,17 @@
     hideTimer: 0,
   };
 
-  const isModifierKey = (e) => e.key === "Meta" || e.key === "Alt";
-  const chordDown = (e) => e.altKey && !e.metaKey && !e.ctrlKey && !e.shiftKey;
+  // The voice-mode keys come from settings. Modifier keys never type anything, so pressing one
+  // while the chord is held is not a shortcut.
+  const hotkey = () => HOTKEYS[settings.hotkey];
+  const isModifierKey = (e) => ["Alt", "Control", "Meta", "Shift"].includes(e.key);
+  // Exactly the chord's keys are down: Option alone is not Option+Shift.
+  const chordDown = (e) => {
+    const keys = hotkey().keys;
+    return Object.keys(MODIFIER_FLAG).every((name) => e[MODIFIER_FLAG[name]] === keys.includes(name));
+  };
+  // Every key of the chord is still held.
+  const chordHeld = (e) => hotkey().keys.every((name) => e[MODIFIER_FLAG[name]]);
   const tail = (text) => (text.length > 72 ? `…${text.slice(-72)}` : text);
 
   function playSound(name) {
@@ -1062,7 +1459,7 @@
   function hideHud(delay = 0) {
     clearTimeout(hud.hideTimer);
     hud.hideTimer = setTimeout(() => {
-      if (dictation.state !== "idle") return; // a new hold has started
+      if (dictation.state === "held") return; // a new hold has started. "ignoring" still hides the pill.
       dictation.shown = false;
       dictation.target = 0;
       hud.root.dataset.mode = "idle"; // back to the dim dot, without the last mode's colour
@@ -1130,7 +1527,9 @@
     if (wasRecording) attempt("dictation_cancel");
   }
 
+  // Dictation only types into a card the user can see, so Home and Settings never receive text.
   function focusedLiveCard() {
+    if (state.view !== "group") return null;
     const card = state.focusedId ? cards.get(state.focusedId) : null;
     return card && card.opened && card.live ? card : null;
   }
@@ -1182,8 +1581,8 @@
     }
   }
 
-  // Option is the only chord. Keys typed while it is held are ordinary Option+key input, so they
-  // reach the terminal, and dictation steps aside.
+  // The chord is the only trigger. Keys typed while it is held are ordinary input, so they reach the
+  // terminal, and dictation steps aside.
   function onDictationKeyDown(e) {
     if (dictation.state === "idle") {
       if (!chordDown(e) || anyDialogOpen()) return;
@@ -1194,7 +1593,7 @@
   }
 
   function onDictationKeyUp(e) {
-    if (dictation.state === "idle" || e.altKey) return; // another key was released while Option is still down
+    if (dictation.state === "idle" || chordHeld(e)) return; // a key of the chord is still down
     releaseDictation();
   }
 
@@ -1204,9 +1603,7 @@
 
   function syncAlerts() {
     const on = alertsOn();
-    const button = $("#alerts-toggle");
-    button.textContent = `Done alerts: ${on ? "On" : "Off"}`;
-    button.setAttribute("aria-pressed", String(on));
+    el.alertsToggle.setAttribute("aria-checked", String(on));
     invoke("set_alerts", { enabled: on }).catch(() => {});
   }
 
@@ -1219,7 +1616,7 @@
   async function confirmQuit(working) {
     if (el.confirmDialog.open) return;
     const ok = await confirmDialog({
-      title: "Quit Session Deck?",
+      title: "Quit Nesa?",
       text: `${working === 1 ? "A session is" : `${working} sessions are`} still working. Quitting stops ${working === 1 ? "it" : "them"} mid-task. Sessions reopen with their transcripts the next time you open them.`,
       label: "Quit",
     });
@@ -1253,6 +1650,12 @@
     } else if (e.key === "]" || e.key === "[") {
       e.preventDefault();
       cycleFocus(e.key === "]" ? 1 : -1);
+    } else if (e.key === "0") {
+      e.preventDefault();
+      showView("home");
+    } else if (e.key === ",") {
+      e.preventDefault();
+      showView("settings");
     } else if (e.key === "j") {
       e.preventDefault();
       jumpToFinished();
@@ -1275,7 +1678,8 @@
     document.querySelectorAll(".segmented button").forEach((btn) =>
       btn.addEventListener("click", () => setKind(btn.dataset.kind)));
     $("#browse").addEventListener("click", browseFolder);
-    $("#alerts-toggle").addEventListener("click", toggleAlerts);
+    el.alertsToggle.addEventListener("click", toggleAlerts);
+    bindHomeAndSettings();
     $("#session-cancel").addEventListener("click", () => el.sessionDialog.close());
     $("#new-session-form").addEventListener("submit", submitSession);
     [el.sessionDialog, el.confirmDialog, el.promptDialog].forEach((dialog) =>
@@ -1313,6 +1717,8 @@
   // ----------------------------------------------------------------- start
 
   async function start() {
+    loadSettings();
+    applyColors();
     bindUi();
     await bindBackendEvents();
     syncAlerts();
@@ -1330,9 +1736,12 @@
 
     const saved = Number(stored.get("selectedGroup"));
     state.selected = Number.isInteger(saved) && saved >= 0 && saved < store.groups.length ? saved : 0;
+    state.resumeGroup = state.selected;
     state.store = store;
     await refreshStatus(allSessions().map((s) => s.id));
-    applyStore(store); // opening the visible cards also ensures their sessions run
+    // Home is the landing view. A group's sessions start when that group is opened.
+    applyStore(store);
+    loadTranscripts();
   }
 
   start();

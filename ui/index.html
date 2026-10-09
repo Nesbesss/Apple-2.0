@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Session Deck</title>
+  <title>Nesa</title>
   <link rel="stylesheet" href="vendor/xterm.css">
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -11,20 +11,23 @@
   <aside class="sidebar">
     <div class="sidebar-head" data-tauri-drag-region>
       <span class="brand-mark" data-icon="deck" data-tauri-drag-region></span>
-      <span class="brand" data-tauri-drag-region>Session Deck</span>
+      <span class="brand" data-tauri-drag-region>Nesa</span>
     </div>
+    <nav class="nav" aria-label="Views">
+      <button class="nav-item" type="button" data-view="home" title="Home (⌘0)"><span class="nav-icon" data-icon="home"></span>Home</button>
+    </nav>
     <div class="sidebar-section" title="⌘] next session · ⌘[ previous session · ⌘J next finished session">
       <span class="section-label" data-tauri-drag-region>Groups</span>
       <button class="icon-btn" id="new-group" title="New group" aria-label="New group" data-icon="plus"></button>
     </div>
     <nav class="group-list" id="group-list" aria-label="Groups"></nav>
     <div class="sidebar-foot">
-      <button class="btn" id="alerts-toggle" aria-pressed="true">Done alerts: On</button>
+      <button class="nav-item" type="button" data-view="settings" title="Settings (⌘,)"><span class="nav-icon" data-icon="gear"></span>Settings</button>
     </div>
   </aside>
 
   <main class="main">
-    <header class="toolbar" data-tauri-drag-region>
+    <header class="toolbar" id="toolbar" data-tauri-drag-region>
       <h1 class="toolbar-title" id="group-title" data-tauri-drag-region></h1>
       <span class="toolbar-count" id="group-count" data-tauri-drag-region></span>
       <div class="summary" id="summary"></div>
@@ -33,7 +36,7 @@
       <button class="btn" id="new-codex"><span class="logo logo-openai" data-logo="openai"></span>New Codex</button>
     </header>
 
-    <section class="stage">
+    <section class="stage" id="stage">
       <div class="grid" id="grid"></div>
       <div class="empty" id="empty" hidden>
         <div class="empty-mark" data-icon="terminal"></div>
@@ -52,13 +55,106 @@
         <p class="empty-hint"><kbd>&#8984;</kbd><kbd>N</kbd> starts a session from anywhere</p>
       </div>
     </section>
+
+    <!-- Home: the landing view. Groups, live sessions, and past sessions to resume. -->
+    <section class="home" id="home" aria-label="Home" hidden>
+      <div class="page">
+        <header class="page-head">
+          <div>
+            <h1 class="page-title">Nesa</h1>
+            <p class="page-sub" id="home-sub"></p>
+          </div>
+          <div class="page-actions">
+            <button class="btn" id="home-claude"><span class="logo logo-claude" data-logo="claude"></span>New Claude</button>
+            <button class="btn" id="home-codex"><span class="logo logo-openai" data-logo="openai"></span>New Codex</button>
+          </div>
+        </header>
+
+        <section class="page-block" id="home-live" hidden>
+          <h2 class="block-title">Needs you</h2>
+          <div class="row-list" id="live-list"></div>
+        </section>
+
+        <section class="page-block">
+          <h2 class="block-title">Groups</h2>
+          <div class="group-cards" id="group-cards"></div>
+        </section>
+
+        <section class="page-block">
+          <div class="block-head">
+            <h2 class="block-title">Resume a session</h2>
+            <button class="icon-btn" id="resume-refresh" title="Look for sessions again" aria-label="Look for sessions again" data-icon="restart"></button>
+          </div>
+          <div class="resume-tools">
+            <div class="segmented" id="resume-filter" role="radiogroup" aria-label="Agent">
+              <button type="button" role="radio" data-filter="all">All</button>
+              <button type="button" role="radio" data-filter="claude"><span class="logo logo-claude" data-logo="claude"></span>Claude</button>
+              <button type="button" role="radio" data-filter="codex"><span class="logo logo-openai" data-logo="openai"></span>Codex</button>
+            </div>
+            <input class="input" id="resume-search" type="search" placeholder="Search by title or folder" aria-label="Search sessions" spellcheck="false">
+            <label class="resume-into"><span>Into</span>
+              <select class="input" id="resume-group" aria-label="Group for the resumed session"></select>
+            </label>
+          </div>
+          <div class="row-list" id="resume-list" aria-live="polite"></div>
+        </section>
+
+        <p class="page-hint" id="home-hint"></p>
+      </div>
+    </section>
+
+    <!-- Settings: colors, the voice-mode keys, and notifications. Saved on this Mac. -->
+    <section class="settings" id="settings" aria-label="Settings" hidden>
+      <div class="page">
+        <header class="page-head">
+          <div>
+            <h1 class="page-title">Settings</h1>
+            <p class="page-sub">Changes apply as soon as you make them.</p>
+          </div>
+        </header>
+
+        <section class="page-block">
+          <h2 class="block-title">Voice mode</h2>
+          <p class="setting-hint">Hold these keys to talk. Release them to type the words into the focused session.</p>
+          <div class="choice-list" id="hotkey-choices" role="radiogroup" aria-label="Voice mode keys"></div>
+        </section>
+
+        <section class="page-block">
+          <h2 class="block-title">Colors</h2>
+          <div class="setting-row">
+            <span class="setting-label">Accent</span>
+            <div class="setting-control">
+              <div class="swatches" id="accent-swatches"></div>
+              <input class="color-input" id="accent-custom" type="color" aria-label="Custom accent color">
+            </div>
+          </div>
+          <div class="setting-row">
+            <span class="setting-label">Surfaces</span>
+            <div class="choice-list" id="surface-choices" role="radiogroup" aria-label="Surfaces"></div>
+          </div>
+          <div id="status-colors"></div>
+          <div class="setting-footer">
+            <button class="btn btn-outline" id="colors-reset" type="button">Reset colors</button>
+          </div>
+        </section>
+
+        <section class="page-block">
+          <h2 class="block-title">Notifications</h2>
+          <div class="setting-row">
+            <span class="setting-label">Alert when a session finishes
+              <small>A system notification when Nesa is in the background.</small></span>
+            <button class="switch" id="alerts-toggle" type="button" role="switch" aria-checked="true" aria-label="Alert when a session finishes"></button>
+          </div>
+        </section>
+      </div>
+    </section>
   </main>
 
   <!-- Hidden holder that keeps terminals of off-screen cards alive. -->
   <div id="parking" hidden></div>
   <div id="toasts" class="toasts" aria-live="polite"></div>
 
-  <!-- Dictation pill: a dim dot at the right edge, expanded while Option+Command is held. -->
+  <!-- Dictation pill: a dim dot at the right edge, expanded while the voice-mode keys are held. -->
   <div class="dictation" id="dictation" role="status" aria-live="polite" data-mode="idle">
     <span class="dictation-dot" aria-hidden="true"></span>
     <span class="dictation-bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>

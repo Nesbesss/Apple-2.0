@@ -5,6 +5,7 @@ mod dictation;
 mod pty;
 mod sound;
 mod store;
+mod transcripts;
 
 use std::{
     collections::HashMap,
@@ -83,6 +84,8 @@ pub fn run() {
             commands::write_pty,
             commands::resize_pty,
             commands::session_status,
+            commands::list_transcripts,
+            commands::resume_session,
             dictation::dictation_start,
             dictation::dictation_stop,
             dictation::dictation_cancel,

@@ -1,5 +1,5 @@
 use crate::{
-    activity, pty, sound,
+    activity, pty, sound, transcripts,
     store::{default_name, Group, Kind, Session, Store},
     AppState,
 };
@@ -148,11 +148,14 @@ pub fn create_session(
     };
     // Claude takes a caller-chosen id, so the same id is used to launch and to resume.
     let agent_id = (kind == Kind::Claude).then(|| id.clone());
-    let session = Session { id: id.clone(), kind, name, cwd, agent_id };
+    start_session(&app, &state, group_index, Session { id, kind, name, cwd, agent_id })
+}
 
+/// Starts a session's agent and files it under group `group_index`. New and resumed sessions both go through here.
+fn start_session(app: &AppHandle, state: &AppState, group_index: usize, session: Session) -> CmdResult<Session> {
     let mut ptys = state.ptys.lock().unwrap();
-    let pty = pty::spawn(&app, &session)?;
-    ptys.insert(id, pty);
+    let pty = pty::spawn(app, &session)?;
+    ptys.insert(session.id.clone(), pty);
     drop(ptys);
 
     let mut store = state.store.lock().unwrap();
@@ -160,6 +163,87 @@ pub fn create_session(
     group.sessions.push(session.clone());
     save(&store)?;
     Ok(session)
+}
+
+/// A past session found on disk, with what the deck already knows about it.
+#[derive(Serialize)]
+pub struct ResumableSession {
+    #[serde(flatten)]
+    transcript: transcripts::Transcript,
+    /// The deck session that already holds this transcript, if any.
+    deck_session: Option<String>,
+    /// Claude is working on this session in another process, so resuming it here would fork it.
+    busy: bool,
+}
+
+/// Past Claude and Codex sessions, newest first. Reading transcripts is file I/O, so it runs off the UI thread.
+#[tauri::command]
+pub async fn list_transcripts(state: State<'_, AppState>) -> CmdResult<Vec<ResumableSession>> {
+    let deck: HashMap<String, String> = state
+        .store
+        .lock()
+        .unwrap()
+        .groups
+        .iter()
+        .flat_map(|g| &g.sessions)
+        .filter_map(|s| s.agent_id.clone().map(|agent| (agent, s.id.clone())))
+        .collect();
+    let busy = activity::claude_busy_ids();
+    let found = tauri::async_runtime::spawn_blocking(|| transcripts::recent(transcripts::LIST_LIMIT))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(found
+        .into_iter()
+        .map(|transcript| ResumableSession {
+            deck_session: deck.get(&transcript.id).cloned(),
+            busy: transcript.kind == Kind::Claude && busy.contains(&transcript.id),
+            transcript,
+        })
+        .collect())
+}
+
+/// Resumes a past session in group `group_index`. A transcript the deck already holds is returned as it
+/// is, so one conversation never runs twice.
+#[tauri::command]
+pub fn resume_session(
+    group_index: usize,
+    kind: Kind,
+    agent_id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> CmdResult<Session> {
+    if !transcripts::is_valid_id(&agent_id) {
+        return Err("That session id is not valid".into());
+    }
+    let taken: Vec<String> = {
+        let store = state.store.lock().unwrap();
+        if let Some(existing) = store
+            .groups
+            .iter()
+            .flat_map(|g| &g.sessions)
+            .find(|s| s.agent_id.as_deref() == Some(agent_id.as_str()))
+        {
+            return Ok(existing.clone());
+        }
+        let group = store.groups.get(group_index).ok_or("That group no longer exists")?;
+        group.sessions.iter().map(|s| s.name.clone()).collect()
+    };
+    if kind == Kind::Claude && activity::claude_busy_ids().contains(&agent_id) {
+        return Err("This session is running in another terminal. Stop it there first.".into());
+    }
+    let transcript = transcripts::find(kind, &agent_id).ok_or("That session is no longer on disk")?;
+
+    // The transcript's own title names the session, and the folder name is the fallback.
+    let folder = transcript
+        .cwd
+        .file_name()
+        .map(|f| f.to_string_lossy().into_owned())
+        .unwrap_or_else(|| kind.label().to_string());
+    let base = if transcript.title.is_empty() { folder } else { transcript.title };
+    let taken: Vec<&str> = taken.iter().map(String::as_str).collect();
+    let name = default_name(&base, &taken);
+    let session = Session { id: Uuid::new_v4().to_string(), kind, name, cwd: transcript.cwd, agent_id: Some(agent_id) };
+    start_session(&app, &state, group_index, session)
 }
 
 #[tauri::command]
