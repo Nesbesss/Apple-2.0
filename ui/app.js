@@ -502,6 +502,7 @@
       clearTimeout(card.timer);
       card.timer = setTimeout(() => fitCard(card), 50);
     }).observe(card.body);
+    if (session.kind !== "browser") bindImageMenu(term, session, card.body);
     cards.set(session.id, card);
 
     const queued = pendingData.get(session.id);
@@ -2445,14 +2446,69 @@
               links.push({
                 range: { start: { x: first.x + 1, y: first.row + 1 }, end: { x: last.x + 1, y: last.row + 1 } },
                 text: m[0],
-                // The first click of a double click does nothing, so the link never opens by accident.
-                activate: (event) => { if (event.detail >= 2) openImage(path, m[0]); },
+                // Clicking leaves the text alone, so selecting it works as usual. Right-click offers the picture
+                // (see bindImageMenu); the underline on hover is what marks the path.
+                activate: () => {},
               });
             });
             callback(links.length ? links : undefined);
           })
           .catch(() => callback(undefined));
       },
+    });
+  }
+
+  // The terminal cell under the pointer: its absolute buffer row and its column. Null outside the grid.
+  function terminalCellAt(term, event) {
+    const screen = term.element?.querySelector(".xterm-screen");
+    if (!screen) return null;
+    const rect = screen.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    const col = Math.floor((event.clientX - rect.left) / (rect.width / term.cols));
+    const viewRow = Math.floor((event.clientY - rect.top) / (rect.height / term.rows));
+    if (col < 0 || col >= term.cols || viewRow < 0 || viewRow >= term.rows) return null;
+    return { row: term.buffer.active.viewportY + viewRow, col };
+  }
+
+  // The image path under a terminal cell, or null. It is found from the same logical line the link provider uses.
+  function imagePathAt(term, cell) {
+    if (!cell) return null;
+    const line = logicalLine(term, cell.row + 1);
+    return [...line.text.matchAll(IMAGE_PATH)].find((m) => {
+      const first = line.cells[m.index];
+      const last = line.cells[m.index + m[0].length - 1];
+      if (!first || !last) return false;
+      const afterStart = cell.row > first.row || (cell.row === first.row && cell.col >= first.x);
+      const beforeEnd = cell.row < last.row || (cell.row === last.row && cell.col <= last.x);
+      return afterStart && beforeEnd;
+    }) || null;
+  }
+
+  // Right-clicking an image path opens a menu: View image, Copy image, Copy path. Anywhere else the right click
+  // is left alone. A double click on a path does not select it, so the highlight does not run on into the line.
+  function bindImageMenu(term, session, body) {
+    // Capture phase on the card, so this runs before xterm sees the press.
+    body.addEventListener("mousedown", (event) => {
+      if (event.detail < 2 || !imagePathAt(term, terminalCellAt(term, event))) return;
+      event.stopPropagation();
+      event.preventDefault();
+    }, true);
+    body.addEventListener("contextmenu", (event) => {
+      const match = imagePathAt(term, terminalCellAt(term, event));
+      if (!match) return;
+      event.preventDefault();
+      const { clientX: x, clientY: y } = event;
+      resolveImages(session.cwd, [match[0]]).then(([path]) => {
+        if (!path) {
+          toast("That picture is no longer there", "info");
+          return;
+        }
+        showMenu(x, y, [
+          { label: "View image", onSelect: () => openImage(path, match[0]) },
+          { label: "Copy image", onSelect: () => attempt("imagegen_copy", { path }) },
+          { label: "Copy path", onSelect: () => attempt("copy_text", { text: path }) },
+        ]);
+      });
     });
   }
 
