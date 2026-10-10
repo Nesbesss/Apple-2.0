@@ -143,6 +143,26 @@ impl Store {
         Ok(())
     }
 
+    /// Swaps sessions `a` and `b`: each takes the other's place, in its group. Used by dragging one card onto
+    /// another in the grid. Their agents keep running.
+    pub fn swap_sessions(&mut self, a: &str, b: &str) -> Result<(), String> {
+        let place = |store: &Store, id: &str| -> Result<(usize, usize), String> {
+            let group = store.group_of(id).ok_or("That session no longer exists")?;
+            let index = store.groups[group].sessions.iter().position(|s| s.id == id).ok_or("That session no longer exists")?;
+            Ok((group, index))
+        };
+        let (ga, ia) = place(self, a)?;
+        let (gb, ib) = place(self, b)?;
+        if ga == gb {
+            self.groups[ga].sessions.swap(ia, ib);
+        } else {
+            let first = self.groups[ga].sessions[ia].clone();
+            let second = std::mem::replace(&mut self.groups[gb].sessions[ib], first);
+            self.groups[ga].sessions[ia] = second;
+        }
+        Ok(())
+    }
+
     /// Moves group `from` so that it sits before the group now at `index`, or last when `index` is past the
     /// end. The index refers to the list as it was before the move.
     pub fn move_group(&mut self, from: usize, index: usize) -> Result<(), String> {
@@ -274,6 +294,19 @@ mod order_tests {
         assert_eq!(sessions(&store, 1), vec!["a1", "b1"]);
         store.place_session("b1", 2, 99).unwrap();
         assert_eq!(sessions(&store, 2), vec!["b1"], "past the end means last");
+    }
+
+    #[test]
+    fn two_sessions_swap_places() {
+        let mut store = store();
+        store.swap_sessions("a1", "a2").unwrap();
+        assert_eq!(sessions(&store, 0), vec!["a2", "a1"]);
+        store.swap_sessions("a2", "b1").unwrap();
+        assert_eq!(sessions(&store, 0), vec!["b1", "a1"]);
+        assert_eq!(sessions(&store, 1), vec!["a2"]);
+        store.swap_sessions("a1", "a1").unwrap();
+        assert_eq!(sessions(&store, 0), vec!["b1", "a1"], "a session swapped with itself stays put");
+        assert!(store.swap_sessions("a1", "missing").is_err());
     }
 
     #[test]

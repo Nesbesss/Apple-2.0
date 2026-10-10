@@ -345,6 +345,12 @@ pub fn place_session(id: String, group: usize, index: usize, state: State<'_, Ap
     edit_store(&state, |store| store.place_session(&id, group, index))
 }
 
+/// Swaps two sessions' places. Used by dragging one card onto another in the grid.
+#[tauri::command]
+pub fn swap_sessions(a: String, b: String, state: State<'_, AppState>) -> CmdResult<Store> {
+    edit_store(&state, |store| store.swap_sessions(&a, &b))
+}
+
 /// Moves group `from` to sit before the group at `index`. Used by drag and drop in the sidebar.
 #[tauri::command]
 pub fn move_group(from: usize, index: usize, state: State<'_, AppState>) -> CmdResult<Store> {

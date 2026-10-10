@@ -751,7 +751,14 @@
     const restart = h("button", { class: "btn", title: "Restart session", onclick: () => restartWithConfirm(session.id) }, icon("restart"), "Restart");
     const expand = h("button", { class: "icon-btn", onclick: () => toggleMaximize(session.id) });
     const more = h("button", { class: "icon-btn", title: "More", "aria-label": "More", onclick: (e) => openCardMenu(session.id, e.currentTarget) }, icon("more"));
-    const head = h("header", { class: "card-head", ondblclick: (e) => { if (!e.target.closest("button")) toggleMaximize(session.id); } },
+    // The header is the handle: drag it onto another card and the two swap places.
+    const head = h("header", {
+      class: "card-head",
+      draggable: "true",
+      ondragstart: (e) => onCardDragStart(e, session.id),
+      ondragend: () => endDrag(),
+      ondblclick: (e) => { if (!e.target.closest("button")) toggleMaximize(session.id); },
+    },
       dot, kindMark(session.kind), name, meta, status, h("span", { class: "spacer" }), restart, expand, more);
     // A browser's page is a native view that covers the body, so the body only shows before a page is open.
     const body = h("div", { class: "card-body" }, browser ? h("div", { class: "browser-empty" }, "Type an address above, or a search.") : null);
@@ -761,6 +768,9 @@
       class: "card",
       "data-id": session.id,
       onmousedown: () => focusCard(session.id),
+      ondragover: (e) => onCardDragOver(e, session.id),
+      ondragleave: (e) => { if (!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.classList.remove("swap-target"); },
+      ondrop: (e) => onCardDrop(e, session.id),
       onanimationend: (e) => {
         if (e.target !== e.currentTarget) return;
         e.currentTarget.classList.remove("arrive");
@@ -1287,13 +1297,89 @@
     e.dataTransfer.effectAllowed = "move";
     e.dataTransfer.setData("text/plain", id); // WebKit will not start a drag without some data
     e.currentTarget.classList.add("dragging");
+    syncBrowsers(); // a row can be dropped on a card too, so browser pages step aside
   }
 
   function endDrag() {
+    const wasSession = state.dragId !== null;
     state.dragId = null;
     state.dragGroup = null;
     el.groupList.querySelectorAll(".dragging, .drop-target, .drop-before, .drop-after").forEach((node) =>
       node.classList.remove("dragging", "drop-target", "drop-before", "drop-after"));
+    el.grid.querySelectorAll(".drag-source, .swap-target").forEach((node) => node.classList.remove("drag-source", "swap-target"));
+    if (wasSession) syncBrowsers(); // browser pages stepped aside for the drag
+  }
+
+  // ------------------------------------------------------------- card drag
+
+  // A card dragged by its header onto another card swaps places with it. It shares state.dragId with the
+  // sidebar's session drag, so a card can also be dropped on a sidebar group or row, and a sidebar row on a card.
+  function onCardDragStart(e, id) {
+    if (state.maximizedId) { e.preventDefault(); return; } // one card on screen, nothing to swap with
+    state.dragId = id;
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", id); // WebKit will not start a drag without some data
+    cards.get(id)?.root.classList.add("drag-source");
+    syncBrowsers(); // a browser page is a native view that would swallow the drop, so it hides while dragging
+  }
+
+  // Every session drag over a card is claimed, even over the card it came from. Left alone, the terminal's
+  // hidden text field would accept the drop and type the session's id into the agent.
+  function onCardDragOver(e, id) {
+    if (state.dragId === null) return;
+    e.preventDefault();
+    const own = state.dragId === id;
+    e.dataTransfer.dropEffect = own ? "none" : "move";
+    el.grid.querySelectorAll(".swap-target").forEach((node) => { if (node !== e.currentTarget) node.classList.remove("swap-target"); });
+    e.currentTarget.classList.toggle("swap-target", !own);
+  }
+
+  function onCardDrop(e, id) {
+    if (state.dragId === null) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const from = state.dragId;
+    endDrag();
+    if (from !== id) swapSessions(from, id);
+  }
+
+  // Swaps two sessions, then slides each moved card from where it was to its new place. Cards move only with
+  // translate: xterm measures its cells from the card's layout, which a transform leaves alone.
+  async function swapSessions(a, b) {
+    const before = new Map([...el.grid.children].map((node) => [node.dataset.id, node.getBoundingClientRect()]));
+    const result = await attempt("swap_sessions", { a, b });
+    if (!result.ok) return;
+    applyStore(result.value);
+    if (cards.has(a)) focusCard(a);
+    slideFrom(before);
+  }
+
+  const SLIDE_MS = 280;
+
+  function slideFrom(before) {
+    const calm = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const moved = calm ? [] : [...el.grid.children].filter((node) => {
+      const was = before.get(node.dataset.id);
+      if (!was) return false;
+      const now = node.getBoundingClientRect();
+      const dx = was.left - now.left;
+      const dy = was.top - now.top;
+      if (!dx && !dy) return false;
+      node.style.transition = "none";
+      node.style.translate = `${dx}px ${dy}px`;
+      node.style.zIndex = "2"; // a sliding card passes over the cards it crosses, not under them
+      return true;
+    });
+    if (!moved.length) { syncBrowsers(); return; }
+    void el.grid.offsetWidth; // the start positions must be laid out before the transition begins
+    moved.forEach((node) => {
+      node.style.transition = `translate ${SLIDE_MS}ms var(--ease-out)`;
+      node.style.translate = "";
+    });
+    setTimeout(() => {
+      moved.forEach((node) => { node.style.transition = ""; node.style.zIndex = ""; });
+      syncBrowsers(); // browser pages follow their cards once they have landed
+    }, SLIDE_MS + 20);
   }
 
   // Dragging a group header reorders the groups. The line shows above or below the header.
@@ -2867,7 +2953,7 @@
 
   // A browser page is a native view over the window, so it cannot be layered under HTML. It is placed on its
   // card's body, and it is hidden whenever a dialog, a menu, the image viewer, or another view covers the column.
-  const mainCovered = () => anyDialogOpen() || closeActiveMenu !== null || !el.viewer.hidden || state.view !== "group";
+  const mainCovered = () => anyDialogOpen() || closeActiveMenu !== null || !el.viewer.hidden || state.view !== "group" || state.dragId !== null;
 
   // Where a card's page belongs, in window coordinates. Parked cards and covered columns hide it.
   function browserFrame(card) {

@@ -604,6 +604,31 @@ body:not(.view-group) .sidebar-hide { display: none; }
 .card-body .xterm-viewport { background-color: transparent !important; }
 .card-body .xterm, .card-body .xterm * { user-select: text; -webkit-user-select: text; }
 
+/* Dragging a card by its header onto another swaps the two. The card being dragged dims, and the one under the
+   pointer is outlined with a label. The overlay ignores the pointer, so the drop still reaches the card. */
+.card { position: relative; }
+.card.drag-source { opacity: 0.45; }
+.card.swap-target {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.card.swap-target::before,
+.card.swap-target::after { position: absolute; z-index: 20; pointer-events: none; }
+.card.swap-target::before { content: ""; inset: 0; background: color-mix(in srgb, var(--accent) 9%, transparent); }
+.card.swap-target::after {
+  content: "Swap places";
+  top: 50%;
+  left: 50%;
+  translate: -50% -50%;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+}
+
 /* Empty state */
 
 .empty {

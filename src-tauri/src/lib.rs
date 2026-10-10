@@ -96,6 +96,7 @@ pub fn run() {
             commands::rename_session,
             commands::move_session,
             commands::place_session,
+            commands::swap_sessions,
             commands::move_group,
             commands::reveal_session_folder,
             commands::copy_text,
