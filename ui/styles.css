@@ -58,7 +58,7 @@ body {
    sit over the sidebar's corner. The toolbar then clears the lights itself and carries the Show button. */
 body.sidebar-hidden.view-group { --sidebar-w: 0px; --toolbar-reserve: 804px; }
 body.sidebar-hidden.view-group .sidebar { min-width: 0; overflow: hidden; visibility: hidden; border-right: 0; }
-body.sidebar-hidden.view-group .toolbar { padding-left: 76px; }
+body.sidebar-hidden.view-group .toolbar { padding-left: 84px; } /* the same clearance as .sidebar-head */
 .icon-btn.sidebar-show { display: none; margin-right: 4px; }
 body.sidebar-hidden.view-group .sidebar-show { display: inline-grid; }
 
@@ -307,6 +307,8 @@ body:not(.view-group) .sidebar-hide { display: none; }
 }
 .group-chevron svg { width: 14px; height: 14px; transition: transform 160ms var(--ease-out); }
 .group-chevron.open svg { transform: rotate(90deg); }
+/* An empty group has nothing to fold. The chevron keeps its space, so the names stay aligned. */
+.group-chevron.is-empty { visibility: hidden; }
 .group-row:hover .group-chevron, .group-chevron:hover { color: var(--text); }
 
 /* The "…" button on a hovered or focused row. It overlaps the end of the name, which fades out under it, and
@@ -908,7 +910,7 @@ body:not(.view-group) .sidebar-hide { display: none; }
 .row-list > .home-empty { padding: 14px; }
 .row-button { width: 100%; text-align: left; transition: background-color var(--ease); }
 .row-button:hover { background: var(--hover); }
-.row-click { cursor: pointer; transition: background-color var(--ease); }
+.row-click { transition: background-color var(--ease); }
 .row-click:hover { background: var(--hover); }
 .row-more {
   display: flex;

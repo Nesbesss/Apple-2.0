@@ -1156,7 +1156,7 @@
       const folded = isCollapsed(group.name);
       // The chevron has no tab stop of its own: the row is the stop, and Left and Right fold and unfold it.
       const chevron = h("button", {
-        class: `group-chevron${folded ? "" : " open"}`,
+        class: `group-chevron${folded ? "" : " open"}${group.sessions.length ? "" : " is-empty"}`,
         type: "button",
         tabindex: "-1",
         "aria-expanded": String(!folded),
@@ -2625,6 +2625,7 @@
   // The meter has room for one short figure: "52% · resets in 1h 30m" shows as "52%", and a sentence such as
   // "no 5h report yet" as a dash. The hover panel keeps the full text.
   function compactUsage(text) {
+    if (text.endsWith("set limit")) return "set"; // no Claude limit yet: the cue to set one, which a click on the meters opens
     const first = text.split(" · ")[0].replace(/ in 5h$/, "");
     return first.length > 6 ? "–" : first;
   }
