@@ -2270,12 +2270,14 @@
     const pageTop = el.settings.getBoundingClientRect().top;
     const line = el.settings.clientHeight / 3; // a section counts as reached once it is in the top third
     const targets = [...el.settingsIndex.querySelectorAll("button")].map((btn) => btn.dataset.target);
+    const atTop = el.settings.scrollTop <= 0; // at the top, or a page too short to scroll, Voice is the first section
     const atEnd = el.settings.scrollTop + el.settings.clientHeight >= el.settings.scrollHeight - 2;
     let current = targets[0];
     for (const id of targets) {
       if (document.getElementById(id).getBoundingClientRect().top - pageTop <= line) current = id;
     }
-    markSettingsSection(atEnd && el.settings.scrollTop > 0 ? targets[targets.length - 1] : current);
+    if (atTop) current = targets[0];
+    markSettingsSection(atEnd && !atTop ? targets[targets.length - 1] : current);
   }
 
   function jumpToSection(id, smooth) {
