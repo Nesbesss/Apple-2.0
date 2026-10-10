@@ -3383,7 +3383,7 @@
     };
   }
 
-  const CLAUDE_STATUS_LINE_TEXT = "Nesa will write ~/.claude/nesa-statusline.py and set statusLine in ~/.claude/settings.json. Your other settings stay as they are, and the original file is kept as settings.json.nesa-backup. While the status line is on, Claude Code hides some footer hints, such as the hold-space-to-speak hint.";
+  const CLAUDE_STATUS_LINE_TEXT = "Nesa will write ~/.claude/nesa-statusline.py, which keeps one small file per session in ~/.claude/nesa-context/ with that session's context window and input, and it sets statusLine in ~/.claude/settings.json. Your other settings stay as they are, and the original file is kept as settings.json.nesa-backup. While the status line is on, Claude Code hides some footer hints, such as the hold-space-to-speak hint.";
 
   // The Settings row for Claude Code's status line. Connecting adds the script and the entry; disconnecting removes them.
   function renderClaudeStatus() {
@@ -3411,7 +3411,7 @@
     const connecting = action.dataset.action === "connect";
     const ok = await confirmDialog(connecting
       ? { title: "Connect Claude usage?", text: CLAUDE_STATUS_LINE_TEXT, label: "Connect", danger: false }
-      : { title: "Disconnect Claude usage?", text: "Nesa removes its entry from Claude's settings.json and deletes its script and last report. Other settings stay.", label: "Disconnect", danger: false });
+      : { title: "Disconnect Claude usage?", text: "Nesa removes its entry from Claude's settings.json and deletes its script, its last report and its per-session context files. Other settings stay.", label: "Disconnect", danger: false });
     if (!ok) return;
     const result = await attempt(connecting ? "connect_claude_limits" : "disconnect_claude_limits");
     if (!result.ok) return;
