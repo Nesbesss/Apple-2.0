@@ -194,7 +194,7 @@
           <header class="s-head">
             <div>
               <h2 class="s-title" id="voice-title">Voice</h2>
-              <p class="s-desc">Hold the voice-mode keys to talk. Release them to type the words into the focused session.</p>
+              <p class="s-desc">Hold the voice-mode keys in any app to talk. Release them to type the words into the app you are using, or into the focused session in Nesa.</p>
             </div>
           </header>
           <div class="voice-summary" id="voice-summary"></div>
@@ -216,6 +216,23 @@
               <span class="setting-label">Play a sound when the words are typed
                 <small>A short sound once the session has them.</small></span>
               <button class="switch" id="typed-sound-toggle" type="button" role="switch" aria-checked="true" aria-label="Play a sound when the words are typed"></button>
+            </div>
+            <!-- Hold the voice-mode keys in any app. The user grants both permissions in System Settings. -->
+            <div class="setting-row">
+              <span class="setting-label">Input Monitoring
+                <small>Lets Nesa hear the voice-mode keys in other apps. Nothing you type is read or kept.</small></span>
+              <div class="setting-control">
+                <span class="access-state" id="access-input-state">Checking</span>
+                <button class="btn" type="button" data-access="input">Open settings</button>
+              </div>
+            </div>
+            <div class="setting-row">
+              <span class="setting-label">Accessibility
+                <small>Lets Nesa paste the words into the app you are using.</small></span>
+              <div class="setting-control">
+                <span class="access-state" id="access-accessibility-state">Checking</span>
+                <button class="btn" type="button" data-access="accessibility">Open settings</button>
+              </div>
             </div>
           </div>
         </section>

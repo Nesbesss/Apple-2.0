@@ -61,6 +61,9 @@ pub fn run() {
             if let Err(err) = dictation::warm(app.handle(), &app.state::<AppState>()) {
                 eprintln!("dictation: {err}");
             }
+            if let Err(err) = dictation::create_hud(app.handle()) {
+                eprintln!("dictation: {err}");
+            }
             activity::spawn_watcher(app.handle().clone());
             Ok(())
         })
@@ -119,6 +122,12 @@ pub fn run() {
             dictation::dictation_start,
             dictation::dictation_stop,
             dictation::dictation_cancel,
+            dictation::dictation_keys,
+            dictation::dictation_watch,
+            dictation::dictation_request_access,
+            dictation::dictation_paste,
+            dictation::dictation_open_privacy,
+            dictation::dictation_hud,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Nesa")

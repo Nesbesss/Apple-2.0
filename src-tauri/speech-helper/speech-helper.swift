@@ -6,6 +6,10 @@
 //
 //   stdin   {"cmd":"start","words":["Kubernetes"],"builtin":true} | {"cmd":"stop"} | {"cmd":"cancel"}
 //           words are the user's vocabulary for this hold. builtin adds contextualWords when true.
+//           {"cmd":"watch"}            starts the key watch if needed and reports the state
+//           {"cmd":"target"}           remembers the app the user is in, for a paste
+//           {"cmd":"paste","text":"...","return":false}
+//           {"cmd":"request_access"}   asks for Input Monitoring and Accessibility
 //   stdout  {"event":"ready"}
 //           {"event":"state","state":"downloading"}
 //           {"event":"listening"}
@@ -14,9 +18,18 @@
 //           {"event":"final","text":"..."}     once per stop; empty when nothing was heard
 //           {"event":"cancelled"}
 //           {"event":"error","message":"..."}
+//           {"event":"tap","state":"on"|"off"|"unavailable"}   the key watch
+//           {"event":"flags","alt":true,"ctrl":false,"meta":false,"shift":false}
+//           {"event":"input"}                  a key or a click came in (never which key)
+//           {"event":"target","app":"Notes"}   the app the words will go to, when a hold begins
+//           {"event":"access","input":true,"accessibility":true}
+//           {"event":"paste","ok":true,"app":"Notes"} or {"event":"paste","ok":false,"reason":"..."}
 
 import AVFAudio
 import AVFoundation
+import AppKit
+import ApplicationServices
+import Carbon.HIToolbox
 import Foundation
 import Speech
 
@@ -293,6 +306,204 @@ actor Dictation {
     }
 }
 
+// MARK: - Keys, permissions and paste
+//
+// The key watch is a listen-only event tap. It reports which modifier keys are down and whether a key
+// or a click came in. It never reads which key was pressed and never changes an event. Paste writes the
+// words to the clipboard, presses Command-V in the app the user is in, and puts the clipboard back.
+
+/// Tags the keystrokes this helper posts, so the key watch ignores its own paste.
+let syntheticMarker: Int64 = 0x4E65_7361
+
+/// The two permissions that dictation outside Nesa needs. The user grants them in System Settings.
+enum Access {
+    static var inputMonitoring: Bool { CGPreflightListenEventAccess() }
+    static var accessibility: Bool { AXIsProcessTrusted() }
+
+    static func report() {
+        Out.send(["event": "access", "input": inputMonitoring, "accessibility": accessibility])
+    }
+
+    /// Asks for both. macOS shows its prompts, and each permission gains a row in System Settings.
+    static func request() {
+        _ = CGRequestListenEventAccess()
+        let prompt = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+        _ = AXIsProcessTrustedWithOptions([prompt: true] as CFDictionary)
+        report()
+    }
+}
+
+/// Watches the modifier keys and input in every app. One tap, created on demand.
+enum KeyWatch {
+    private static let lock = NSLock()
+    private static var tap: CFMachPort?
+    private static var starting = false
+    private static let kinds: [CGEventType] = [.keyDown, .flagsChanged, .leftMouseDown, .rightMouseDown, .otherMouseDown]
+
+    /// Starts the tap if it is not running. Tries again on each call, so a permission granted later works.
+    static func ensure() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard tap == nil, !starting else { return }
+        starting = true
+        let thread = Thread {
+            let mask = kinds.reduce(CGEventMask(0)) { $0 | (CGEventMask(1) << $1.rawValue) }
+            let created = CGEvent.tapCreate(
+                tap: .cgSessionEventTap, place: .headInsertEventTap, options: .listenOnly,
+                eventsOfInterest: mask, callback: keyWatchCallback, userInfo: nil)
+            guard let created else {
+                lock.lock()
+                starting = false
+                lock.unlock()
+                Out.send(["event": "tap", "state": "unavailable"])
+                return
+            }
+            lock.lock()
+            tap = created
+            starting = false
+            lock.unlock()
+            CFRunLoopAddSource(CFRunLoopGetCurrent(), CFMachPortCreateRunLoopSource(nil, created, 0), .commonModes)
+            CGEvent.tapEnable(tap: created, enable: true)
+            Out.send(["event": "tap", "state": "on"])
+            CFRunLoopRun()
+        }
+        thread.start()
+    }
+
+    /// Tells the app whether the tap is running, so it can choose between the tap and the window.
+    static func report() {
+        lock.lock()
+        let running = tap != nil
+        lock.unlock()
+        Out.send(["event": "tap", "state": running ? "on" : "off"])
+    }
+
+    /// Called on the tap's thread for each event it was asked for.
+    static func handle(_ type: CGEventType, _ event: CGEvent) {
+        switch type {
+        case .tapDisabledByTimeout, .tapDisabledByUserInput:
+            // The system switches off a slow tap. Turn it back on rather than losing the keys.
+            lock.lock()
+            let current = tap
+            lock.unlock()
+            if let current { CGEvent.tapEnable(tap: current, enable: true) }
+        case .flagsChanged:
+            guard event.getIntegerValueField(.eventSourceUserData) != syntheticMarker else { return }
+            let flags = event.flags
+            Out.send([
+                "event": "flags",
+                "alt": flags.contains(.maskAlternate),
+                "ctrl": flags.contains(.maskControl),
+                "meta": flags.contains(.maskCommand),
+                "shift": flags.contains(.maskShift),
+            ])
+        case .keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown:
+            guard event.getIntegerValueField(.eventSourceUserData) != syntheticMarker else { return }
+            Out.send(["event": "input"])
+        default:
+            return
+        }
+    }
+}
+
+/// The tap's callback. It cannot capture anything, so it hands each event to `KeyWatch`.
+let keyWatchCallback: CGEventTapCallBack = { _, type, event, _ in
+    KeyWatch.handle(type, event)
+    return Unmanaged.passUnretained(event)
+}
+
+/// Pastes dictated words into the app the user was in when the hold started.
+enum Typing {
+    private static let lock = NSLock()
+    private static var target: NSRunningApplication?
+    private static let queue = DispatchQueue(label: "nesa.typing")
+    private static let transient = NSPasteboard.PasteboardType("org.nspasteboard.TransientType")
+
+    /// Remembers the frontmost app, unless it is Nesa itself, and tells the app its name for the pill.
+    static func rememberTarget() {
+        let front = NSWorkspace.shared.frontmostApplication
+        let own = ProcessInfo.processInfo.processIdentifier
+        let chosen = front?.processIdentifier == own ? nil : front
+        lock.lock()
+        target = chosen
+        lock.unlock()
+        Out.send(["event": "target", "app": chosen?.localizedName ?? ""])
+    }
+
+    /// Pastes `text` into the remembered app. Runs off the request loop, so a paste never holds up a hold.
+    static func paste(_ text: String, pressReturn: Bool) {
+        queue.async {
+            lock.lock()
+            let app = target
+            lock.unlock()
+            guard let app else {
+                report(false, "target")
+                return
+            }
+            guard !IsSecureEventInputEnabled() else {
+                report(false, "secure")
+                return
+            }
+            guard Access.accessibility else {
+                report(false, "accessibility")
+                return
+            }
+            // A pasted Command-V must land in the app the user chose, never in Nesa.
+            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier else {
+                report(false, "moved")
+                return
+            }
+            let board = NSPasteboard.general
+            let saved = copy(board.pasteboardItems ?? [])
+            board.clearContents()
+            board.setString(text, forType: .string)
+            board.setData(Data(), forType: transient)
+            let written = board.changeCount
+            keystroke(9, flags: .maskCommand) // V
+            report(true, app.localizedName ?? "")
+            if pressReturn {
+                DispatchQueue.global().asyncAfter(deadline: .now() + 0.15) { keystroke(36, flags: []) }
+            }
+            // Put the clipboard back, unless something was copied since. Some apps read it slowly.
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.9) {
+                guard board.changeCount == written else { return }
+                board.clearContents()
+                board.writeObjects(saved)
+            }
+        }
+    }
+
+    private static func report(_ ok: Bool, _ detail: String) {
+        if ok {
+            Out.send(["event": "paste", "ok": true, "app": detail])
+        } else {
+            Out.send(["event": "paste", "ok": false, "reason": detail])
+        }
+    }
+
+    /// A copy of each clipboard item, so the clipboard can be written back after the paste.
+    private static func copy(_ items: [NSPasteboardItem]) -> [NSPasteboardItem] {
+        items.map { item in
+            let copy = NSPasteboardItem()
+            for type in item.types {
+                if let data = item.data(forType: type) { copy.setData(data, forType: type) }
+            }
+            return copy
+        }
+    }
+
+    /// Presses one key with exactly these modifiers. The events are tagged so the key watch ignores them.
+    private static func keystroke(_ key: CGKeyCode, flags: CGEventFlags) {
+        let source = CGEventSource(stateID: .privateState)
+        for down in [true, false] {
+            guard let event = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: down) else { continue }
+            event.flags = flags
+            event.setIntegerValueField(.eventSourceUserData, value: syntheticMarker)
+            event.post(tap: .cgSessionEventTap)
+        }
+    }
+}
+
 /// One line from the app: a command, and for `start`, the vocabulary to expect during that hold.
 struct Request {
     let cmd: String
@@ -308,9 +519,23 @@ Thread.detachNewThread {
         guard let data = line.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let cmd = object["cmd"] as? String else { continue }
-        let words = object["words"] as? [String] ?? []
-        let builtin = object["builtin"] as? Bool ?? true
-        requestInput.yield(Request(cmd: cmd, words: words, builtin: builtin))
+        // Keys and paste are handled here, not in the speech queue, so a slow speech start cannot delay them.
+        switch cmd {
+        case "watch":
+            KeyWatch.ensure()
+            KeyWatch.report()
+            Access.report()
+        case "request_access":
+            Access.request()
+        case "target":
+            Typing.rememberTarget()
+        case "paste":
+            Typing.paste(object["text"] as? String ?? "", pressReturn: object["return"] as? Bool ?? false)
+        default:
+            let words = object["words"] as? [String] ?? []
+            let builtin = object["builtin"] as? Bool ?? true
+            requestInput.yield(Request(cmd: cmd, words: words, builtin: builtin))
+        }
     }
     requestInput.finish()
     exit(0)

@@ -11,7 +11,7 @@
     <key>CFBundleShortVersionString</key>
     <string>0.1.0</string>
     <key>NSMicrophoneUsageDescription</key>
-    <string>Nesa listens while you hold Option, then types what you said into the focused session.</string>
+    <string>Nesa listens while you hold the voice-mode keys, then types what you said into the app you are using.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
     <string>Nesa turns your speech into text on this Mac. Nothing is sent to a server.</string>
 </dict>

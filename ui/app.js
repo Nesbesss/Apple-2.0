@@ -114,6 +114,8 @@
     settingsIndex: $("#settings-index"),
     voiceSummary: $("#voice-summary"),
     hotkeyChoices: $("#hotkey-choices"),
+    accessInput: $("#access-input-state"),
+    accessAccessibility: $("#access-accessibility-state"),
     accentSwatches: $("#accent-swatches"),
     accentCustom: $("#accent-custom"),
     accentHex: $("#accent-hex"),
@@ -418,6 +420,7 @@
   function setSetting(key, value) {
     settings[key] = value;
     saveSettings();
+    if (key === "hotkey") syncChord();
     applyColors();
     if (state.view === "settings") renderSettings();
     if (state.view === "home") renderHomeHint();
@@ -2249,7 +2252,7 @@
       h("div", { class: "voice-summary-text" },
         h("p", { class: "voice-summary-title" }, `Hold ${mode.label} to talk.`),
         h("p", { class: "voice-summary-body" },
-          `Let go and the words are typed into the focused session. ${AFTER_SUMMARY[settings.afterTyping]} ${sound}`)));
+          `Let go and the words are typed into the app you are using, or the focused session in Nesa. ${AFTER_SUMMARY[settings.afterTyping]} ${sound}`)));
   }
 
   // The jump index at the top of Settings. It marks the section nearest the top as the page scrolls, and a
@@ -2931,6 +2934,8 @@
     startedAt: 0, // when the mic opened, for the elapsed clock
     clock: -1, // the last whole second written to the meta line
     destination: "", // name of the session the words will be typed into; "" when none is focused
+    elsewhere: false, // the hold began while another app was in front, so the words are pasted there
+    pendingPaste: "", // the words waiting for the helper to say where they went
   };
   // Shown while the mic is open and no words have arrived. It names the voice-mode key that is held.
   const placeholder = () => `Speak, then release ${hotkey().symbol}`;
@@ -2966,7 +2971,8 @@
   }
 
   const clockText = (seconds) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
-  const listeningMeta = (seconds) => `${clockText(seconds)} · ${dictation.destination || "no session focused"}`;
+  // The app the words will go to: a Nesa session, or the app that was in front when the hold began.
+  const listeningMeta = (seconds) => `${clockText(seconds)} · ${dictation.destination || (dictation.elsewhere ? "the app in front" : "no session focused")}`;
 
   function playSound(name) {
     invoke("play_sound", { name: SOUNDS[name] }).catch(() => {});
@@ -2991,6 +2997,7 @@
     if (label !== undefined) hud.label.textContent = label;
     if (words !== undefined) showWords(words, kind);
     if (meta !== undefined) hud.meta.textContent = meta;
+    if (dictation.elsewhere) mirrorHud();
   }
 
   function hideHud(delay = 0) {
@@ -3001,6 +3008,10 @@
       dictation.target = 0;
       hud.root.dataset.mode = "idle"; // back to the dot, without the last mode's colour
       hud.root.classList.remove("is-visible", "is-warn");
+      if (dictation.elsewhere) {
+        mirrorHud(); // shown is false now, so this hides the pill over the other app
+        dictation.elsewhere = false;
+      }
     }, delay);
   }
 
@@ -3024,6 +3035,7 @@
     if (seconds !== dictation.clock) {
       dictation.clock = seconds;
       hud.meta.textContent = listeningMeta(seconds);
+      if (dictation.elsewhere) mirrorHud();
     }
     dictation.frame = requestAnimationFrame(animateHud);
   }
@@ -3046,8 +3058,7 @@
 
   function beginDictation() {
     // Ignore the chord while typing in a text field that is not a terminal (rename, dialogs).
-    const active = document.activeElement;
-    if (active && active.matches("input, textarea") && !active.classList.contains("xterm-helper-textarea")) return;
+    if (nesaTyping()) return;
     clearWatchdog(); // a new hold ends the wait for the last transcript
     dictation.state = "held";
     dictation.timer = setTimeout(startListening, DICTATION_HOLD_DELAY);
@@ -3062,13 +3073,15 @@
     const card = focusedLiveCard();
     const session = card && findSession(card.id);
     dictation.destination = session ? session.name : "";
+    // Nesa in front types into its own sessions. Any other app in front gets the words pasted, with the pill over it.
+    dictation.elsewhere = !document.hasFocus();
     // Say where the words will go now, so a missing target is not discovered after a whole sentence.
     setHud("listening", {
       label: "Listening",
       words: placeholder(),
       kind: "message",
       meta: listeningMeta(0),
-      warn: !session,
+      warn: !session && !dictation.elsewhere,
     });
     playSound("start");
     if (!dictation.frame) animateHud();
@@ -3107,9 +3120,106 @@
     if (wasRecording) attempt("dictation_cancel");
   }
 
-  // Dictation only types into a card the user can see, so Home and Settings never receive text.
+  // ------------------------------------------- dictation in every app
+
+  // While the helper's key watch runs, it reports the voice-mode chord in every app, and the window's
+  // key handlers step aside. Without it (no Input Monitoring yet), the window still handles Nesa's own keys.
+  let keysWatched = false;
+  const access = { input: null, accessibility: null }; // null until the helper has said
+  const PASTE_REASONS = {
+    target: "No app was in front when you started",
+    secure: "A secure field is active, so nothing was typed",
+    accessibility: "Allow Nesa in Accessibility to type into other apps",
+    moved: "The app changed while you spoke",
+  };
+
+  // Typing into a text field of Nesa itself. Dictation steps aside then, so a rename is not interrupted.
+  const nesaTyping = () => {
+    const active = document.activeElement;
+    return document.hasFocus() && !!active && active.matches("input, textarea") && !active.classList.contains("xterm-helper-textarea");
+  };
+
+  // The pill over another app. Nesa sends the state; the level bars come from the helper's events.
+  function mirrorHud() {
+    invoke("dictation_hud", {
+      state: {
+        visible: dictation.elsewhere && dictation.shown,
+        mode: hud.root.dataset.mode,
+        warn: hud.root.classList.contains("is-warn"),
+        label: hud.label.textContent,
+        meta: hud.meta.textContent,
+        words: hud.words.textContent,
+        kind: hud.text.dataset.kind,
+      },
+    }).catch(() => {});
+  }
+
+  // The chord the helper watches. It follows the voice-mode key setting.
+  const syncChord = () => invoke("dictation_keys", { keys: hotkey().keys }).catch(() => {});
+  // Starts the key watch if it is not running, and reports the permissions. Runs at launch and on focus.
+  const watchKeys = () => invoke("dictation_watch").catch(() => {});
+
+  function onChordEvent(chordState) {
+    if (chordState === "held") {
+      // A dialog in Nesa only blocks the hold while Nesa is in front. Behind another app it cannot be in the way.
+      if (dictation.state !== "idle" || nesaTyping() || (document.hasFocus() && anyDialogOpen())) return;
+      clearWatchdog(); // a new hold ends the wait for the last transcript
+      dictation.state = "held";
+      startListening();
+    } else if (chordState === "other") {
+      if (dictation.state === "held") cancelDictation("ignoring");
+    } else if (chordState === "up") {
+      releaseDictation();
+    }
+  }
+
+  // The words go to the app that was in front when the hold began. The helper answers where they went.
+  function sendToApp(spoken) {
+    dictation.pendingPaste = spoken;
+    armWatchdog();
+    const text = settings.afterTyping === "space" ? `${spoken} ` : spoken;
+    invoke("dictation_paste", { text, pressReturn: settings.afterTyping === "return" }).catch((err) => {
+      onPasteResult({ ok: false, error: String(err) });
+    });
+  }
+
+  function onPasteResult(event) {
+    clearWatchdog();
+    const spoken = dictation.pendingPaste;
+    dictation.pendingPaste = "";
+    if (!spoken) return;
+    if (event.ok) {
+      recordHistory(spoken, event.app || "");
+      setHud("done", { label: `Typed into ${event.app || "the app"}`, words: tail(spoken), kind: "tail", meta: "", warn: false });
+      if (settings.typedSound) playSound("done");
+      hideHud(1600);
+    } else {
+      recordHistory(spoken, "");
+      setHud("error", { label: "Not typed", words: tail(spoken), kind: "tail", meta: PASTE_REASONS[event.reason] || event.error || "Nothing was typed", warn: true });
+      hideHud(4500);
+    }
+  }
+
+  // Input Monitoring and Accessibility, as the helper reports them.
+  function onAccess(event) {
+    access.input = event.input;
+    access.accessibility = event.accessibility;
+    el.accessInput.textContent = event.input ? "Allowed" : "Not allowed";
+    el.accessInput.dataset.granted = String(event.input);
+    el.accessAccessibility.textContent = event.accessibility ? "Allowed" : "Not allowed";
+    el.accessAccessibility.dataset.granted = String(event.accessibility);
+  }
+
+  // Opens the System Settings pane for one permission, after asking macOS for both.
+  function openAccess(pane) {
+    attempt("dictation_request_access");
+    attempt("dictation_open_privacy", { pane });
+  }
+
+  // Dictation only types into a card the user can see, so Home and Settings never receive text. A card
+  // only counts while Nesa is in front, so words meant for another app never land in a Nesa session.
   function focusedLiveCard() {
-    if (state.view !== "group") return null;
+    if (state.view !== "group" || !document.hasFocus()) return null;
     const card = state.focusedId ? cards.get(state.focusedId) : null;
     return card && card.opened && card.live ? card : null;
   }
@@ -3133,6 +3243,8 @@
       setHud("done", { label: `Typed into ${session ? session.name : "the session"}`, words: tail(spoken), kind: "tail", meta: "", warn: false });
       if (settings.typedSound) playSound("done");
       hideHud(1600);
+    } else if (dictation.elsewhere) {
+      sendToApp(spoken);
     } else {
       // Nothing to type into: keep the words on screen so they are not lost, and in the history.
       recordHistory(spoken, "");
@@ -3147,7 +3259,30 @@
         dictation.target = Math.min(1, event.value);
         break;
       case "partial":
-        if (dictation.shown) showWords(event.text ? tail(event.text) : placeholder(),event.text ? "tail" : "message");
+        if (dictation.shown) {
+          showWords(event.text ? tail(event.text) : placeholder(), event.text ? "tail" : "message");
+          if (dictation.elsewhere) mirrorHud();
+        }
+        break;
+      case "keys":
+        onChordEvent(event.state);
+        break;
+      case "tap":
+        keysWatched = event.state === "on";
+        break;
+      case "access":
+        onAccess(event);
+        break;
+      case "target":
+        // The app the words will go to, named by the helper when the hold began.
+        if (dictation.elsewhere && dictation.recording && event.app) {
+          dictation.destination = event.app;
+          hud.meta.textContent = listeningMeta(Math.max(0, Math.floor((Date.now() - dictation.startedAt) / 1000)));
+          mirrorHud();
+        }
+        break;
+      case "paste":
+        onPasteResult(event);
         break;
       case "final":
         finishDictation(event.text || "");
@@ -3175,6 +3310,7 @@
   // The chord is the only trigger. Keys typed while it is held are ordinary input, so they reach the
   // terminal, and dictation steps aside.
   function onDictationKeyDown(e) {
+    if (keysWatched) return; // the helper reports the chord in every app
     if (dictation.state === "idle") {
       if (!chordDown(e) || anyDialogOpen()) return;
       beginDictation();
@@ -3184,7 +3320,7 @@
   }
 
   function onDictationKeyUp(e) {
-    if (dictation.state === "idle" || chordHeld(e)) return; // a key of the chord is still down
+    if (keysWatched || dictation.state === "idle" || chordHeld(e)) return; // a key of the chord is still down
     releaseDictation();
   }
 
@@ -3278,6 +3414,7 @@
     $("#browse").addEventListener("click", browseFolder);
     el.alertsToggle.addEventListener("click", toggleAlerts);
     el.typedSoundToggle.addEventListener("click", () => setSetting("typedSound", !settings.typedSound));
+    document.querySelectorAll("[data-access]").forEach((button) => button.addEventListener("click", () => openAccess(button.dataset.access)));
     el.builtinToggle.addEventListener("click", () => setSetting("builtinWords", !settings.builtinWords));
     el.vocabForm.addEventListener("submit", addVocabulary);
     el.historyToggle.addEventListener("click", () => setSetting("historyOn", !settings.historyOn));
@@ -3295,9 +3432,12 @@
     window.addEventListener("paste", onWindowPaste, true);
     // Losing focus means the key release will never arrive, so end the hold now.
     window.addEventListener("blur", () => cancelDictation());
-    document.addEventListener("visibilitychange", () => { if (document.hidden) cancelDictation(); });
+    // A hold that is listening to another app is not Nesa's to end when Nesa is hidden.
+    document.addEventListener("visibilitychange", () => { if (document.hidden && !dictation.elsewhere) cancelDictation(); });
     window.addEventListener("keydown", onKeyDown, true);
     window.addEventListener("focus", clearSeenDone);
+    // Coming back to Nesa is when a permission granted in System Settings can take effect.
+    window.addEventListener("focus", watchKeys);
     window.addEventListener("contextmenu", (e) => { if (!e.target.closest(".group-row, .input, .group-rename, .xterm")) e.preventDefault(); });
   }
 
@@ -3328,6 +3468,9 @@
     applyColors();
     bindUi();
     await bindBackendEvents();
+    // The helper watches the voice-mode chord in every app once it knows which keys they are.
+    syncChord();
+    watchKeys();
     syncAlerts();
     syncDonePing();
     startUsage();
