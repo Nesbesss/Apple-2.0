@@ -797,7 +797,7 @@
       dot, kindMark(session.kind), name, meta, status, ctx, subsBtn, h("span", { class: "spacer" }), restart, expand, more);
     // A browser's page is a native view that covers the body, so the body only shows before a page is open.
     // The subagent viewer covers the body. The terminal under it keeps running, and keys pressed in the viewer stay there.
-    const subs = h("div", { class: "card-subs", hidden: true, onkeydown: (e) => onViewerKey(e, session.id) });
+    const subs = h("div", { class: "card-subs", hidden: true, tabindex: "-1", onkeydown: (e) => onViewerKey(e, session.id) });
     const body = h("div", { class: "card-body" }, browser ? h("div", { class: "browser-empty" }, "Type an address above, or a search.") : null, subs);
     const bar = browser ? browserBar(session.id) : null;
     // The entrance animation is one-shot: drop its class once it ends, so moving the card later does not replay it.
@@ -890,25 +890,30 @@
 
   async function refreshTokens() {
     if (tokensBusy || document.hidden) return;
-    // Every Claude and Codex session in the store, not only the cards on screen: the status strip and the sidebar read them too.
+    // Counting tokens reads whole transcripts, so only the sessions in view count them: the group on screen, or every session
+    // on Home, which shows each one's tokens. The others get their context and subagent count, which the sidebar shows.
+    const onScreen = state.view === "home" ? null : new Set((visibleGroup() ? visibleGroup().sessions : []).map((s) => s.id));
     const requests = allSessions()
       .filter((s) => s.agent_id && (s.kind === "claude" || s.kind === "codex"))
-      .map((s) => ({ id: s.id, kind: s.kind, agentId: s.agent_id }));
+      .map((s) => ({ id: s.id, kind: s.kind, agentId: s.agent_id, full: !onScreen || onScreen.has(s.id) }));
     if (!requests.length) return;
     tokensBusy = true;
     try {
       const counts = await invoke("session_tokens", { requests, sinceMs: blockStartMs() });
+      const full = new Set(requests.filter((request) => request.full).map((request) => request.id));
       let listChanged = false;
       for (const { id, tokens, units, context, subagents } of counts) {
-        state.tokens[id] = tokens;
-        state.windowUnits[id] = units;
+        if (full.has(id)) {
+          state.tokens[id] = tokens;
+          state.windowUnits[id] = units;
+        }
         state.context[id] = context;
         if ((state.subagentCount[id] || 0) !== subagents) listChanged = true;
         state.subagentCount[id] = subagents;
       }
       requests.forEach((request) => updateCardStatus(request.id));
       // A session that gained or lost subagents gets or drops its toggle in the sidebar.
-      if (listChanged) renderSidebar();
+      if (listChanged) refreshSidebar();
       updateSummary();
     } catch {
       // Keep the last counts. The header shows the older number until the next read succeeds.
@@ -1113,6 +1118,40 @@
     });
   }
 
+  // Redraws one session's subagent rows in place. The rest of the sidebar keeps its focus, and any drag or rename under way.
+  function renderSubRows(id) {
+    const row = el.groupList.querySelector(`.session-row[data-id="${id}"]`);
+    const session = findSession(id);
+    if (!row || !session) return;
+    const refocus = focusedRowSelector();
+    let next = row.nextElementSibling;
+    while (next && next.classList.contains("sub-row")) {
+      const after = next.nextElementSibling;
+      next.remove();
+      next = after;
+    }
+    row.after(...subagentRows(session));
+    const back = refocus && el.groupList.querySelector(refocus);
+    if (back) back.focus({ preventScroll: true });
+  }
+
+  // A whole sidebar redraw drops a drag or a rename under way, so it waits until that ends.
+  function refreshSidebar() {
+    if (state.dragId !== null || state.dragGroup !== null || state.renaming !== null) {
+      state.sidebarStale = true;
+      return;
+    }
+    renderSidebar();
+  }
+
+  // Draws an open subagent's facts line again, for its relative times. The transcript is not redrawn.
+  function refreshViewerFacts(id) {
+    const card = cards.get(id);
+    const view = state.viewerView && state.viewerView.view;
+    const line = card && card.subs.querySelector(".subs-title span");
+    if (line && view) line.textContent = subagentFacts(view.subagent, stateOf(id) === "working");
+  }
+
   // Opens or closes a session's subagents in the sidebar. Opening reads its list.
   function toggleSubagents(id) {
     if (state.expanded.has(id)) {
@@ -1157,7 +1196,7 @@
     if (sig === subagentSig.get(id)) return;
     subagentSig.set(id, sig);
     state.subagentLists[id] = list;
-    if (state.expanded.has(id)) renderSidebar();
+    if (state.expanded.has(id)) renderSubRows(id);
     if (state.viewer && state.viewer.id === id) renderViewer(id);
   }
 
@@ -1212,8 +1251,11 @@
       const view = await invoke("subagent_view", { kind: session.kind, agentId: session.agent_id, key: viewer.key });
       // The viewer may have moved on while the read was in flight.
       if (current()) {
+        // A read that changed nothing redraws nothing. Only the facts line moves, for its relative time.
+        const same = state.viewerView && state.viewerView.key === viewer.key && JSON.stringify(state.viewerView.view) === JSON.stringify(view);
         state.viewerView = { key: viewer.key, view };
-        renderViewer(viewer.id);
+        if (same) refreshViewerFacts(viewer.id);
+        else renderViewer(viewer.id);
       }
     } catch (err) {
       if (current()) {
@@ -1240,6 +1282,8 @@
     const mode = viewer.key ? "detail" : "list";
     const before = card.subs.querySelector(".subs-body");
     const modeChanged = card.subs.dataset.mode !== mode;
+    // The redraw replaces the buttons, so focus that was inside the viewer goes back to the viewer, not to the page.
+    const hadFocus = card.subs.contains(document.activeElement);
     const pinned = !!before && before.scrollHeight - before.scrollTop - before.clientHeight < 24;
     const scrolled = before ? before.scrollTop : 0;
     card.subs.dataset.mode = mode;
@@ -1280,6 +1324,7 @@
     if (modeChanged) scroll.scrollTop = viewer.key ? scroll.scrollHeight : 0;
     else scroll.scrollTop = pinned ? scroll.scrollHeight : scrolled;
     if (focus) close.focus({ preventScroll: true });
+    else if (hadFocus) card.subs.focus({ preventScroll: true });
   }
 
   // One subagent in a card's list: its state, its task and what it has used.
@@ -1338,7 +1383,9 @@
     cards.forEach((card) => card.root.classList.toggle("focused", card.id === id));
     el.groupList.querySelectorAll(".session-row").forEach((row) => row.classList.toggle("focused", row.dataset.id === id));
     const card = cards.get(id);
-    if (focusTerminal && card && card.opened) card.term.focus();
+    // While a card's subagent viewer is open, keys belong to the viewer. The terminal must not take focus, or Escape would reach the agent.
+    const viewing = state.viewer && state.viewer.id === id;
+    if (focusTerminal && card && card.opened && !viewing) card.term.focus();
     updateSummary();
   }
 
@@ -1584,6 +1631,7 @@
   }
 
   function renderSidebar() {
+    state.sidebarStale = false;
     const input = el.groupList.querySelector(".group-rename");
     if (input) input.dataset.dead = "1"; // the blur from replacing it must not commit
     const refocus = focusedRowSelector();
@@ -1751,6 +1799,7 @@
       node.classList.remove("dragging", "drop-target", "drop-before", "drop-after"));
     el.grid.querySelectorAll(".drag-source, .swap-target").forEach((node) => node.classList.remove("drag-source", "swap-target"));
     if (wasSession) syncBrowsers(); // browser pages stepped aside for the drag
+    if (state.sidebarStale) renderSidebar(); // a redraw that waited for this drag
   }
 
   // ------------------------------------------------------------- card drag
@@ -2031,6 +2080,7 @@
     }
     renderAll();
     focusCard(state.focusedId);
+    refreshTokens(); // the group's sessions are counted from now on, not on the next tick
   }
 
   function startRename(index) {

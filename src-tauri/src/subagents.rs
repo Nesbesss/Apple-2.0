@@ -132,6 +132,11 @@ pub fn list(index: &mut Index, kind: Kind, transcript: &Path, codex_root: &Path,
     out
 }
 
+/// How many subagents a session started, found from the disk alone. Their transcripts are not read.
+pub fn count(index: &mut Index, kind: Kind, transcript: &Path, codex_root: &Path, session_id: &str) -> usize {
+    discover(index, kind, transcript, codex_root, session_id).len()
+}
+
 /// The subagents under a session, counted, with their tokens.
 pub fn totals(index: &mut Index, kind: Kind, transcript: &Path, codex_root: &Path, session_id: &str) -> Totals {
     let metas = discover(index, kind, transcript, codex_root, session_id);

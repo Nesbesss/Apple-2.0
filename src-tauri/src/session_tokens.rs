@@ -49,6 +49,10 @@ pub struct Request {
     /// "claude" or "codex". Other kinds have no transcript, so they get no count.
     pub kind: String,
     pub agent_id: Option<String>,
+    /// Whether to count the tokens, which reads the session's whole transcript. Without it a request gets its context and
+    /// its subagent count only, which read far less.
+    #[serde(default)]
+    pub full: bool,
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -108,13 +112,11 @@ impl Tokens {
         }
     }
 
-    /// The subagents a session started, counted with their tokens. Empty when the session has no transcript yet.
-    pub fn subagent_totals(&mut self, home: &Path, request: &Request) -> subagents::Totals {
-        let (Some(id), Some(kind)) = (request.agent_id.as_deref(), kind_of(&request.kind)) else {
-            return subagents::Totals::default();
-        };
-        let Some(transcript) = self.transcript(home, kind, id) else { return subagents::Totals::default() };
-        subagents::totals(&mut self.subagents, kind, &transcript, &codex_root(home), id)
+    /// How many subagents a session started, from the disk alone. Their transcripts are not read.
+    pub fn subagent_count(&mut self, home: &Path, request: &Request) -> usize {
+        let (Some(id), Some(kind)) = (request.agent_id.as_deref(), kind_of(&request.kind)) else { return 0 };
+        let Some(transcript) = self.transcript(home, kind, id) else { return 0 };
+        subagents::count(&mut self.subagents, kind, &transcript, &codex_root(home), id)
     }
 
     /// The subagents of a session, listed for the card.
@@ -247,19 +249,18 @@ pub async fn session_tokens(
         Ok(requests
             .iter()
             .filter_map(|request| {
+                let context = tokens.context(&home, request);
+                let subagents = tokens.subagent_count(&home, request);
+                if !request.full {
+                    return Some(Count { id: request.id.clone(), tokens: 0, units: 0.0, context, subagents });
+                }
                 let total = tokens.count(&home, request)?;
                 let units = request
                     .agent_id
                     .as_deref()
                     .and_then(|id| tokens.claude.get(id))
                     .map_or(0.0, |meter| meter.units_since(since));
-                Some(Count {
-                    id: request.id.clone(),
-                    tokens: total,
-                    units,
-                    context: tokens.context(&home, request),
-                    subagents: tokens.subagent_totals(&home, request).count,
-                })
+                Some(Count { id: request.id.clone(), tokens: total, units, context, subagents })
             })
             .collect())
     })
@@ -303,7 +304,7 @@ mod tests {
     }
 
     fn claude_request(id: &str) -> Request {
-        Request { id: "session".into(), kind: "claude".into(), agent_id: Some(id.into()) }
+        Request { id: "session".into(), kind: "claude".into(), agent_id: Some(id.into()), full: true }
     }
 
     #[test]
@@ -333,7 +334,7 @@ mod tests {
     fn a_session_without_a_transcript_has_no_count() {
         let scratch = Scratch::new("missing");
         assert_eq!(Tokens::default().count(&scratch.0, &claude_request("nope")), None);
-        let browser = Request { id: "b".into(), kind: "browser".into(), agent_id: None };
+        let browser = Request { id: "b".into(), kind: "browser".into(), agent_id: None, full: true };
         assert_eq!(Tokens::default().count(&scratch.0, &browser), None);
     }
 
@@ -345,7 +346,7 @@ mod tests {
         append(&rollout, "\n");
         append(&rollout, r#"{"timestamp":"2026-10-09T10:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":400,"output_tokens":200,"total_tokens":1200}}}}"#);
         append(&rollout, "\n");
-        let request = Request { id: "codex".into(), kind: "codex".into(), agent_id: Some("abc123".into()) };
+        let request = Request { id: "codex".into(), kind: "codex".into(), agent_id: Some("abc123".into()), full: true };
         assert_eq!(Tokens::default().count(&scratch.0, &request), Some(600 + 200));
 
         append(&rollout, r#"{"timestamp":"2026-10-09T10:05:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":5000,"cached_input_tokens":4000,"output_tokens":500}}}}"#);
@@ -368,7 +369,7 @@ mod tests {
         let request = claude_request("s3");
         // The input of the last call is the context: input, cache writes and cache reads, not the output.
         assert_eq!(tokens.context(&scratch.0, &request), Some(Context { used: 121_003, window: 200_000, exact: false }));
-        assert_eq!(tokens.subagent_totals(&scratch.0, &request).count, 1);
+        assert_eq!(tokens.subagent_count(&scratch.0, &request), 1);
     }
 
     #[test]
@@ -397,11 +398,23 @@ mod tests {
                 r#"{"timestamp":"2026-10-09T09:31:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":500,"cached_input_tokens":100,"output_tokens":100}}}}"#
             ),
         );
-        let request = Request { id: "codex".into(), kind: "codex".into(), agent_id: Some(parent_id.into()) };
+        let request = Request { id: "codex".into(), kind: "codex".into(), agent_id: Some(parent_id.into()), full: true };
         let mut tokens = Tokens::default();
         assert_eq!(tokens.count(&scratch.0, &request), Some(800 + 500), "own 800, and the subagent's 500");
         assert_eq!(tokens.context(&scratch.0, &request), Some(Context { used: 700, window: 258_400, exact: true }));
-        assert_eq!(tokens.subagent_totals(&scratch.0, &request).count, 1);
+        assert_eq!(tokens.subagent_count(&scratch.0, &request), 1);
+    }
+
+    #[test]
+    fn a_light_request_counts_subagents_without_building_a_token_meter() {
+        let scratch = Scratch::new("light");
+        let projects = scratch.0.join(".claude/projects");
+        append(&projects.join("-work-api").join("s4.jsonl"), &format!("{}\n", assistant("main", 100, 0, 50, 0)));
+        append(&projects.join("-work-api").join("s4").join("subagents").join("agent-b1.jsonl"), &format!("{}\n", assistant("sub", 20, 0, 5, 0)));
+        let light = Request { id: "session".into(), kind: "claude".into(), agent_id: Some("s4".into()), full: false };
+        let mut tokens = Tokens::default();
+        assert_eq!(tokens.subagent_count(&scratch.0, &light), 1);
+        assert!(tokens.claude.is_empty(), "no transcript was read for its tokens");
     }
 
     /// Prints what a card would show for real sessions. Read only. Run with:
@@ -413,10 +426,9 @@ mod tests {
         let mut tokens = Tokens::default();
         for item in std::env::var("NESA_SESSIONS").unwrap().split(',') {
             let (kind, id) = item.split_once(':').unwrap();
-            let request = Request { id: id.into(), kind: kind.into(), agent_id: Some(id.into()) };
+            let request = Request { id: id.into(), kind: kind.into(), agent_id: Some(id.into()), full: true };
             println!("{kind} {id}: tokens {:?} context {:?}", tokens.count(&home, &request), tokens.context(&home, &request));
-            let totals = tokens.subagent_totals(&home, &request);
-            println!("  subagents: {} with {} tokens", totals.count, totals.tokens);
+            println!("  subagents: {}", tokens.subagent_count(&home, &request));
             let agent = if kind == "claude" { Kind::Claude } else { Kind::Codex };
             for subagent in tokens.subagent_list(&home, agent, id) {
                 println!("  {subagent:?}");

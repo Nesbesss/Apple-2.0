@@ -2191,6 +2191,9 @@ body:not(.view-group) .dictation:not(.is-visible) { display: none; }
   background: var(--card);
 }
 .card-subs[hidden] { display: none; }
+/* The transcript can be copied, which the app's default text selection does not allow. The panel takes focus itself, so no ring. */
+.card-subs { user-select: text; -webkit-user-select: text; }
+.card-subs:focus { outline: none; }
 .subs-head {
   display: flex;
   align-items: center;
