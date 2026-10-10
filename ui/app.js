@@ -2876,6 +2876,8 @@
       // The status line first: its reset time sets the block both totals are counted from.
       claudeLimits = await invoke("claude_limits").catch(() => null);
       usageSnapshot = await invoke("usage_snapshot", { sinceMs: blockStartMs() });
+      // The session counts start from the block too. At launch they may have been read before the block was known.
+      refreshTokens();
       renderUsage();
       // The card statuses carry the five-hour share, so they take the new reading now rather than on their next tick.
       for (const id of cards.keys()) updateCardStatus(id);
@@ -2919,7 +2921,7 @@
     const reported = Math.round(win.usedPercent);
     return {
       percent,
-      title: `This session's estimated share of the ${reported}% Claude Code reports for your five-hour window. It weights each model by its price, so Opus counts more than Sonnet and Haiku less. Cache reads are left out. Claude Code reported that ${formatAgo(now - win.observedAtMs)}, and the window resets ${formatWhen(win.resetsAtMs)}.`,
+      title: `This session's estimated share of the ${reported}% Claude Code reports for your five-hour window. It weights each model by its price, so Opus counts more than Sonnet and Haiku less. Cache reads are left out. Use outside this Mac, such as claude.ai, is in that percent but not in the split, so it lands on these sessions. Claude Code reported that ${formatAgo(now - win.observedAtMs)}, and the window resets ${formatWhen(win.resetsAtMs)}.`,
     };
   }
 
