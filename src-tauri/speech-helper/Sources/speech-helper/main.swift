@@ -456,7 +456,13 @@ enum Typing {
                 return
             }
             // The field is read before the paste, so the text the paste adds can be found afterwards.
-            let field = learn ? Corrections.snapshot(pid: app.processIdentifier) : nil
+            var field: Corrections.Field? = nil
+            if learn {
+                switch Corrections.snapshot(pid: app.processIdentifier) {
+                case .success(let found): field = found
+                case .failure(let issue): Out.send(["event": "tracking", "state": "unavailable", "reason": issue.reason])
+                }
+            }
             let board = NSPasteboard.general
             let saved = copy(board.pasteboardItems ?? [])
             board.clearContents()
@@ -595,11 +601,17 @@ enum Corrections {
         return (value, range)
     }
 
-    /// The field a paste is about to go into, or nil when it is secure or cannot be read.
-    static func snapshot(pid: pid_t) -> Field? {
-        guard let element = focusedField(pid: pid), !isSecure(element) else { return nil }
-        guard let (text, range) = textState(element) else { return nil }
-        return Field(element: element, pid: pid, text: text, caret: range.location, selected: range.length)
+    /// Why a field cannot be tracked. The reason is one the user can act on.
+    struct Unavailable: Error {
+        let reason: String
+    }
+
+    /// The field a paste is about to go into. On failure, the reason is one the user can act on.
+    static func snapshot(pid: pid_t) -> Result<Field, Unavailable> {
+        guard let element = focusedField(pid: pid) else { return .failure(Unavailable(reason: "no-text-field")) }
+        guard !isSecure(element) else { return .failure(Unavailable(reason: "secure-field")) }
+        guard let (text, range) = textState(element) else { return .failure(Unavailable(reason: "no-text")) }
+        return .success(Field(element: element, pid: pid, text: text, caret: range.location, selected: range.length))
     }
 
     /// The text between two UTF-16 offsets, moved inward so that no surrogate pair is cut in half.
@@ -627,9 +639,12 @@ enum Corrections {
                 guard field.caret + count <= after.length,
                       after.substring(with: NSRange(location: field.caret, length: count)) == inserted else { continue }
                 let tracker = Tracker(element: field.element, pid: field.pid, left: left, right: right, inserted: inserted)
+                Out.send(["event": "tracking", "state": "started"])
                 queue.async { start(tracker) }
                 return
             }
+            // The text never showed up where the paste went, so there is nothing to track.
+            Out.send(["event": "tracking", "state": "unavailable", "reason": "not-updated"])
         }
     }
 
@@ -724,6 +739,26 @@ enum Corrections {
 // unrelated speech, so the words list does not bias Parakeet. "Often heard as" fixes and learned corrections
 // still apply, because they change the text after recognition.
 
+/// Parakeet's last reported state. The app asks again at launch, so a window that starts late still gets it.
+enum EngineStatus {
+    private static let lock = NSLock()
+    private static var last: [String: Any]?
+
+    static func set(_ event: [String: Any]) {
+        lock.lock()
+        last = event
+        lock.unlock()
+        Out.send(event)
+    }
+
+    static func repeatLast() {
+        lock.lock()
+        let event = last
+        lock.unlock()
+        if let event { Out.send(event) }
+    }
+}
+
 /// Microphone audio at 16 kHz mono, gathered while a hold is open. The tap appends; the ticker and release read.
 final class SampleBuffer: @unchecked Sendable {
     private let lock = NSLock()
@@ -762,6 +797,7 @@ actor Parakeet {
 
     /// Downloads and loads the model once, at launch. Until it is ready, holds use Apple's engine.
     func prewarm() async {
+        EngineStatus.set(["event": "engine", "name": "parakeet", "state": "loading"])
         do {
             let directory = AsrModels.defaultCacheDirectory(for: .ultra)
             if !AsrModels.modelsExist(at: directory, version: .ultra) {
@@ -772,8 +808,9 @@ actor Parakeet {
             try await manager.loadModels(models)
             asr = manager
             isReady = true
-            Out.send(["event": "engine", "name": "parakeet", "state": "ready"])
+            EngineStatus.set(["event": "engine", "name": "parakeet", "state": "ready"])
         } catch {
+            EngineStatus.set(["event": "engine", "name": "parakeet", "state": "failed", "message": message(error)])
             Out.send(["event": "error", "message": "Parakeet could not load: \(message(error))"])
         }
     }
@@ -874,6 +911,7 @@ Thread.detachNewThread {
             KeyWatch.ensure()
             KeyWatch.report()
             Access.report()
+            EngineStatus.repeatLast()
         case "request_access":
             Access.request()
         case "target":
@@ -910,12 +948,14 @@ Task {
             switch request.cmd {
             case "start":
                 let hints = contextualHints(request.words, builtin: request.builtin)
+                // Each hold says which engine it runs on, so the pill can show it.
                 if request.engine == "parakeet", await parakeet.isReady {
                     holdOnParakeet = true
+                    Out.send(["event": "engine", "used": "parakeet"])
                     do { try await parakeet.start() } catch { Out.send(["event": "error", "message": message(error)]) }
                 } else {
                     holdOnParakeet = false
-                    if request.engine == "parakeet" { Out.send(["event": "engine", "used": "apple"]) }
+                    Out.send(["event": "engine", "used": "apple"])
                     await dictation.start(hints: hints)
                 }
             case "stop":

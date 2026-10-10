@@ -206,9 +206,12 @@ fn spawn(app: &AppHandle) -> CmdResult<Helper> {
                 Some("edit") => {
                     let inserted = event.get("inserted").and_then(Value::as_str).unwrap_or_default();
                     let edited = event.get("edited").and_then(Value::as_str).unwrap_or_default();
-                    let pairs = corrections::learn(inserted, edited);
-                    if !pairs.is_empty() {
-                        let _ = app.emit("dictation", json!({ "event": "learned", "pairs": pairs }));
+                    let check = corrections::check(inserted, edited);
+                    if check.corrections.is_empty() {
+                        // Say why nothing was learned, so an edit that was seen is not silently dropped.
+                        let _ = app.emit("dictation", json!({ "event": "checked", "status": check.status }));
+                    } else {
+                        let _ = app.emit("dictation", json!({ "event": "learned", "pairs": check.corrections }));
                     }
                 }
                 _ => {

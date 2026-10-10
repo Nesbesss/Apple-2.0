@@ -2553,7 +2553,7 @@
       h("button", { class: "ping-preview", type: "button", title: `Preview ${name}`, "aria-label": `Preview ${name}`, onclick: () => previewDonePing(name) }))));
     el.speechEngineChoices.replaceChildren(...Object.keys(SPEECH_ENGINES).map((key) =>
       choice(key === settings.speechEngine, () => setSetting("speechEngine", key), SPEECH_ENGINES[key].label)));
-    el.speechEngineHint.textContent = SPEECH_ENGINES[settings.speechEngine].hint;
+    renderSpeechEngineHint();
     el.afterTypingChoices.replaceChildren(...Object.keys(AFTER_TYPING).map((key) =>
       choice(key === settings.afterTyping, () => setSetting("afterTyping", key), AFTER_TYPING[key].label)));
     el.afterTypingHint.textContent = AFTER_TYPING[settings.afterTyping].hint;
@@ -2572,6 +2572,38 @@
     space: "A space is added after them.",
     return: "Return is pressed after them, so the agent runs what you said.",
   };
+
+  // Parakeet loads in the helper after launch. Until it reports, Settings says it is checking.
+  let parakeetStatus = { state: "checking", message: "" };
+  function setParakeetStatus(state, message = "") {
+    parakeetStatus = { state, message };
+    renderSpeechEngineHint();
+  }
+  function renderSpeechEngineHint() {
+    const parts = [SPEECH_ENGINES[settings.speechEngine].hint];
+    if (settings.speechEngine === "parakeet") parts.push(parakeetStatusText());
+    el.speechEngineHint.textContent = parts.join(" ");
+  }
+  function parakeetStatusText() {
+    switch (parakeetStatus.state) {
+      case "ready": return "Parakeet is loaded.";
+      case "loading": return "Parakeet is loading. Apple's engine is used until it is ready.";
+      case "failed": return `Parakeet could not load (${parakeetStatus.message || "unknown error"}). Apple's engine is used.`;
+      default: return "Checking Parakeet.";
+    }
+  }
+
+  // Which engine a hold runs on, shown on the pill. Parakeet can be chosen while its model still loads,
+  // so Apple can take a hold; then the user is told why.
+  function onEngineUsed(used) {
+    if (dictation.recording && hud.root.dataset.mode === "listening") {
+      hud.label.textContent = `Listening · ${used === "parakeet" ? "Parakeet" : "Apple"}`;
+      if (dictation.elsewhere) mirrorHud();
+    }
+    if (used === "apple" && settings.speechEngine === "parakeet") {
+      toast("Parakeet is still loading, so Apple's engine took this one.", "plain");
+    }
+  }
 
   function renderVoiceSummary() {
     const mode = HOTKEYS[settings.hotkey];
@@ -3571,7 +3603,10 @@
     let text = "";
     for (let row = Math.max(0, cursor - SCREEN_ROWS); row <= Math.min(buffer.length - 1, cursor + 2); row++) {
       const line = buffer.getLine(row);
-      if (line) text += (line.isWrapped ? "" : "\n") + line.translateToString(true);
+      if (!line) continue;
+      // A wrapped row carries on from the one above it, so the space where it broke is kept when the next row continues it.
+      const continues = buffer.getLine(row + 1)?.isWrapped === true;
+      text += (line.isWrapped ? "" : "\n") + line.translateToString(!continues);
     }
     return text;
   }
@@ -3583,8 +3618,39 @@
     const card = cards.get(cardId);
     if (!dictated || !card || !settings.learnCorrections || Date.now() - dictated.at > LEARN_WINDOW_MS) return;
     invoke("learn_from_screen", { inserted: dictated.text, screen: readScreen(card.term) })
-      .then(applyLearned)
+      .then(reportCheck)
       .catch(() => {});
+  }
+
+  // Why a check learned nothing, in words. Unchanged text is silent: most sends have no correction in them.
+  const CHECK_MESSAGES = {
+    none: ["Not learned", "The text changed, but not as a single word fix between unchanged words."],
+    notFound: ["Not learned", "Couldn't find the dictated text on the prompt."],
+    edge: ["Not learned", "The first or last word changed. A fix needs unchanged words on both sides."],
+  };
+  function reportCheck(check) {
+    if (!check) return;
+    if (check.status === "learned") {
+      applyLearned(check.corrections);
+      return;
+    }
+    if (check.status === "unchanged") return;
+    const [label, text] = CHECK_MESSAGES[check.status] || ["Not learned", "Nothing was learned from that edit."];
+    announce(label, text, check.status === "none" ? "plain" : "warn");
+  }
+
+  // The reason corrections cannot be learned in another app. Said once per reason, so it is not repeated.
+  const TRACKING_REASONS = {
+    "no-text-field": "This app does not give Nesa its text box, so corrections are not learned there.",
+    "secure-field": "That is a secure field, so Nesa does not read it and learns nothing there.",
+    "no-text": "This text box does not expose its text, so corrections are not learned there.",
+    "not-updated": "The dictated text did not show up in this app's text box, so corrections are not learned there.",
+  };
+  const trackingNoticed = new Set();
+  function reportTracking(reason) {
+    if (!settings.learnCorrections || !TRACKING_REASONS[reason] || trackingNoticed.has(reason)) return;
+    trackingNoticed.add(reason);
+    announce("Not learned", TRACKING_REASONS[reason], "warn");
   }
 
   // Fixes join the vocabulary, where the user can see and remove them.
@@ -3598,14 +3664,20 @@
 
   // Says what was learned: Nesa's own toast, or the pill when the words went to another app and it is idle.
   function announceLearned(names) {
+    announce("Learned", names, "ok");
+  }
+
+  // Says something about learning: the pill over another app when the pill is free, a toast in Nesa.
+  // tone is "ok", "plain" or "warn".
+  function announce(label, text, tone) {
     if (!document.hasFocus() && dictation.state === "idle" && !dictation.shown) {
       dictation.elsewhere = true;
       dictation.shown = true;
-      setHud("done", { label: "Learned", words: names, kind: "message", meta: "", warn: false });
-      hideHud(2400);
+      setHud(tone === "warn" ? "error" : "done", { label, words: text, kind: "message", meta: "", warn: tone === "warn" });
+      hideHud(3000);
       return;
     }
-    toast(`Learned ${names}`, "ok");
+    toast(`${label}: ${text}`, tone === "ok" ? "ok" : tone === "warn" ? "error" : "plain");
   }
 
   // Dictation only types into a card the user can see, so Home and Settings never receive text. A card
@@ -3679,8 +3751,14 @@
         onPasteResult(event);
         break;
       case "engine":
-        // Parakeet was chosen but its model is not loaded yet, so this hold used Apple's engine.
-        if (event.used === "apple") toast("Parakeet is still getting ready, so Apple's engine took this one.", "ok");
+        if (event.name === "parakeet") setParakeetStatus(event.state, event.message);
+        if (event.used) onEngineUsed(event.used);
+        break;
+      case "checked":
+        reportCheck(event);
+        break;
+      case "tracking":
+        if (event.state === "unavailable") reportTracking(event.reason);
         break;
       case "learned":
         applyLearned(event.pairs);

@@ -177,10 +177,39 @@ pub fn find_edit(inserted: &str, screen: &str) -> Option<String> {
     None
 }
 
+/// What one check of a dictated text found. The status says why nothing was learned, so the app can tell the user.
+/// `notFound`: the dictated text is not on screen. `edge`: it is, but its first or last word changed, so there are
+/// no unchanged words on both sides to learn from. `unchanged`: it reads as dictated. `none`: it changed, but not
+/// in a way that is a clear word fix. `learned`: at least one fix was found.
+#[derive(Debug, Serialize)]
+pub struct Check {
+    pub status: &'static str,
+    pub corrections: Vec<Correction>,
+}
+
+/// Compares the dictated text with how it reads now.
+pub fn check(inserted: &str, edited: &str) -> Check {
+    if tokens(inserted) == tokens(edited) {
+        return Check { status: "unchanged", corrections: Vec::new() };
+    }
+    let corrections = learn(inserted, edited);
+    let status = if corrections.is_empty() { "none" } else { "learned" };
+    Check { status, corrections }
+}
+
 /// Learns from a Nesa card: the text that was dictated into it, and what the card's prompt shows now.
 #[tauri::command]
-pub fn learn_from_screen(inserted: String, screen: String) -> Vec<Correction> {
-    find_edit(&inserted, &screen).map(|edited| learn(&inserted, &edited)).unwrap_or_default()
+pub fn learn_from_screen(inserted: String, screen: String) -> Check {
+    match find_edit(&inserted, &screen) {
+        Some(edited) => check(&inserted, &edited),
+        None => {
+            // If either end of the dictated text is still on screen, the text was edited at its edge.
+            let words = tokens(&inserted);
+            let on_screen = |word: Option<&&str>| word.map_or(false, |word| screen.contains(*word));
+            let status = if on_screen(words.first()) || on_screen(words.last()) { "edge" } else { "notFound" };
+            Check { status, corrections: Vec::new() }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -263,14 +292,14 @@ mod tests {
     fn a_fix_on_screen_is_found_between_its_first_and_last_words() {
         let screen = "│ > deploy to cooper netties today │";
         assert_eq!(find_edit("deploy to cooper netties today", screen).as_deref(), Some("deploy to cooper netties today"));
-        let learned = learn_from_screen("deploy to cooper netties today".into(), screen.into());
+        let learned = learn_from_screen("deploy to cooper netties today".into(), screen.into()).corrections;
         assert!(learned.is_empty(), "the screen still has the heard text, so nothing changed");
     }
 
     #[test]
     fn the_correction_on_screen_is_learned() {
         let screen = "│ > deploy to Kubernetes today │\n│                        │";
-        let learned = learn_from_screen("deploy to cooper netties today".into(), screen.into());
+        let learned = learn_from_screen("deploy to cooper netties today".into(), screen.into()).corrections;
         assert_eq!(heard_meant(&learned), vec![(Some("cooper netties"), "Kubernetes")]);
     }
 
@@ -291,8 +320,21 @@ mod tests {
                       ╰──────────────────────────────────────────────────╯\n\
                         ? for shortcuts";
         let inserted = "deploy to cooper netties and then we ship the build tonight";
-        let learned = learn_from_screen(inserted.into(), screen.into());
+        let learned = learn_from_screen(inserted.into(), screen.into()).corrections;
         assert_eq!(heard_meant(&learned), vec![(Some("cooper netties"), "Kubernetes")]);
+    }
+
+    #[test]
+    fn each_check_says_why_it_learned_nothing() {
+        let inserted = "deploy to cooper netties today";
+        assert_eq!(learn_from_screen(inserted.into(), "nothing like it".into()).status, "notFound");
+        assert_eq!(learn_from_screen(inserted.into(), "│ > deploy to cooper netties today │".into()).status, "unchanged");
+        assert_eq!(learn_from_screen(inserted.into(), "│ > deploy to cooper netties now │".into()).status, "edge");
+        assert_eq!(learn_from_screen(inserted.into(), "│ > deploy to Kubernetes ok │".into()).status, "edge");
+        assert_eq!(learn_from_screen(inserted.into(), "│ > deploy to cooper netties today and more │".into()).status, "unchanged");
+        let fixed = learn_from_screen(inserted.into(), "│ > deploy to Kubernetes today │".into());
+        assert_eq!(fixed.status, "learned");
+        assert_eq!(fixed.corrections.len(), 1);
     }
 
     #[test]
