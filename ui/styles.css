@@ -1855,6 +1855,85 @@ kbd {
   .empty-action:active { transform: none; }
 }
 
+/* Command palette (Cmd+K) and shortcuts sheet (Cmd+/) */
+
+.dialog.palette {
+  /* Near the top, like a launcher, not centered. */
+  margin: 12vh auto auto;
+  width: 560px;
+  overflow: hidden;
+}
+.palette-input {
+  flex: none;
+  display: block;
+  width: 100%;
+  height: 46px;
+  padding: 0 18px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  font-size: 15px;
+}
+.palette-input:hover,
+.palette-input:focus { border-color: var(--line); }
+.palette-input::placeholder { color: var(--dim); }
+.palette-list {
+  /* About eight rows, then it scrolls. */
+  max-height: min(334px, 50vh);
+  padding: 6px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.palette-heading { padding: 8px 10px 4px; }
+.palette-heading:first-child { padding-top: 4px; }
+.palette-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 38px;
+  padding: 0 10px;
+  border-radius: 8px;
+  color: var(--text);
+  cursor: default;
+}
+.palette-row[aria-selected="true"] { background: var(--selected); }
+.palette-mark { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 16px; color: var(--muted); }
+.palette-mark .logo, .palette-mark .kind-mark { width: 14px; height: 14px; }
+.palette-mark .icon { width: 15px; height: 15px; }
+.palette-mark .icon svg { width: 100%; height: 100%; display: block; }
+.palette-row[aria-selected="true"] .palette-mark { color: var(--text); }
+.palette-label { flex: 0 1 auto; min-width: 0; max-width: 70%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.palette-secondary { flex: 1 1 0; min-width: 0; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.palette-right { display: inline-flex; flex: none; align-items: center; gap: 6px; margin-left: auto; color: var(--muted); font-size: 12px; }
+.palette-right kbd { margin: 0; }
+.palette-empty { padding: 22px 10px; color: var(--muted); text-align: center; }
+.palette-foot {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--line);
+  color: var(--dim);
+  font-size: 11.5px;
+}
+.palette-foot kbd { min-width: 0; padding: 0 4px; font-size: 10.5px; line-height: 1.4; }
+
+.dialog.shortcuts { width: 640px; }
+.shortcuts-body { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 32px; align-items: start; }
+.shortcuts-group + .shortcuts-group { margin-top: 14px; }
+.shortcuts-group .menu-heading { padding: 0 0 6px; }
+.shortcut-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 30px;
+  border-top: 1px solid var(--line);
+}
+.shortcut-row > span:first-child { min-width: 0; }
+.shortcut-keys { display: inline-flex; flex: none; align-items: center; gap: 2px; }
+
 /* These rows sit on the edge of a panel that clips overflow, so their focus ring is drawn inside it. */
 .row-list > .row-button:focus-visible { outline-offset: -2px; }
 

@@ -88,6 +88,8 @@
     sessionDialog: $("#new-session"),
     confirmDialog: $("#confirm"),
     promptDialog: $("#prompt"),
+    paletteDialog: $("#palette"),
+    shortcutsDialog: $("#shortcuts"),
     toolbar: $("#toolbar"),
     stage: $("#stage"),
     home: $("#home"),
@@ -611,7 +613,7 @@
   // Returns false for keys xterm must not forward to the shell. Every app shortcut listed in
   // onKeyDown belongs here too, or the shell would receive it as well.
   function handleTermKey(id, e) {
-    if (e.metaKey && (e.key === "n" || e.key === "[" || e.key === "]" || e.key === "j" || e.key === "Enter" || e.key === "," || /^[0-9]$/.test(e.key))) return false;
+    if (e.metaKey && (e.key === "n" || e.key === "[" || e.key === "]" || e.key === "j" || e.key === "Enter" || e.key === "," || e.key === "k" || e.key === "/" || e.code === "Slash" || /^[0-9]$/.test(e.key))) return false;
     if (e.key === "Enter" && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
       if (e.type === "keydown") invoke("write_pty", { id, data: "\x1b\r" }).catch(() => {});
       return false; // ESC + CR makes Claude Code insert a newline
@@ -1544,7 +1546,7 @@
     });
   }
 
-  const anyDialogOpen = () => [el.sessionDialog, el.confirmDialog, el.promptDialog].some((d) => d.open);
+  const anyDialogOpen = () => [el.sessionDialog, el.confirmDialog, el.promptDialog, el.paletteDialog, el.shortcutsDialog].some((d) => d.open);
 
   // Kinds of the next session. The dialog's own segmented control, not the Home filter that shares the class.
   const NAME_HINT = {
@@ -3350,6 +3352,257 @@
     if (ok) invoke("quit_app").catch(() => {});
   }
 
+  // --------------------------------------------------------- command palette
+
+  // Cmd+K: one box to reach any session, group or action. Cmd+/ lists every shortcut.
+
+  // Shortcut keys, one entry per key cap. The palette's actions and the shortcuts sheet share these.
+  const KEYS = {
+    newSession: ["⌘", "N"],
+    nextSession: ["⌘", "]"],
+    prevSession: ["⌘", "["],
+    nextFinished: ["⌘", "J"],
+    expand: ["⌘", "↩"],
+    restore: ["Esc"],
+    newLine: ["⇧", "↩"],
+    palette: ["⌘", "K"],
+    home: ["⌘", "0"],
+    groups: ["⌘", "1–9"],
+    settings: ["⌘", ","],
+    shortcuts: ["⌘", "/"],
+  };
+
+  const SETTINGS_SECTIONS = [
+    ["panel-voice", "Voice", "dictation talk microphone hotkey"],
+    ["panel-appearance", "Appearance", "theme accent color surface"],
+    ["panel-alerts", "Alerts", "sound ping notification done"],
+    ["usage-settings", "Usage", "limits tokens claude codex"],
+    ["panel-vocabulary", "Vocabulary", "words dictionary dictation"],
+    ["panel-history", "History", "dictation transcripts past"],
+  ];
+
+  // Every action the palette offers. Add new ones here. `when` hides one that cannot run right now.
+  // `kind` borrows a session kind's logo as the icon, otherwise `icon` names an entry of ICONS.
+  function paletteActions() {
+    const newSession = (kind, label, words) => ({ label, kind, keywords: `new create start ${words}`, run: () => openSessionDialog(kind) });
+    return [
+      newSession("claude", "New Claude session", "agent"),
+      newSession("codex", "New Codex session", "agent openai"),
+      newSession("terminal", "New terminal", "shell zsh"),
+      newSession("browser", "New browser", "web page site"),
+      { label: "New group", icon: "plus", keywords: "create add folder", run: createGroup },
+      { label: "Go to Home", icon: "home", keywords: "overview start", keys: KEYS.home, run: () => showView("home") },
+      { label: "Open Settings", icon: "gear", keywords: "preferences options", keys: KEYS.settings, run: () => showView("settings") },
+      { label: "Jump to next finished session", icon: "check", keywords: "done complete waiting", keys: KEYS.nextFinished, run: jumpToFinished },
+      {
+        label: state.maximizedId ? "Restore focused card" : "Expand focused card",
+        icon: state.maximizedId ? "collapse" : "expand",
+        keywords: "maximize fullscreen zoom size",
+        keys: KEYS.expand,
+        when: () => state.view === "group" && !!state.focusedId,
+        run: () => toggleMaximize(state.focusedId),
+      },
+      { label: "Keyboard shortcuts", icon: "sparkle", keywords: "keys help hotkeys", keys: KEYS.shortcuts, run: openShortcuts },
+      ...SETTINGS_SECTIONS.map(([id, name, words]) => ({
+        label: `Settings: ${name}`,
+        icon: "gear",
+        keywords: words,
+        run: () => {
+          showView("settings");
+          requestAnimationFrame(() => jumpToSection(id, false));
+        },
+      })),
+    ].filter((action) => !action.when || action.when());
+  }
+
+  const palette = { items: [], active: 0 };
+
+  // Sessions that need a look come first when nothing is typed: done, then working, then the rest.
+  const ATTENTION_RANK = { done: 0, working: 1 };
+
+  function paletteItems() {
+    const sessions = groups().flatMap((group) => group.sessions.map((session) => ({
+      type: "session",
+      id: session.id,
+      label: session.name,
+      secondary: `${group.name} · ${shortPath(session.cwd || "")}`.replace(/ · $/, ""),
+      keywords: `${group.name} ${session.kind} ${session.cwd || ""}`,
+      run: () => focusSession(session.id),
+    })));
+    sessions.sort((a, b) => (ATTENTION_RANK[stateOf(a.id)] ?? 2) - (ATTENTION_RANK[stateOf(b.id)] ?? 2));
+    const groupItems = groups().map((group, index) => ({
+      type: "group",
+      label: group.name,
+      secondary: `${group.sessions.length} ${group.sessions.length === 1 ? "session" : "sessions"}`,
+      keywords: "group",
+      run: () => selectGroup(index),
+    }));
+    const actions = paletteActions().map((action) => ({ type: "action", secondary: "", ...action }));
+    return [...sessions, ...groupItems, ...actions];
+  }
+
+  // 0 means no match. A prefix of the label beats the start of a word, which beats a match inside a word.
+  function matchScore(text, term) {
+    const at = text.indexOf(term);
+    if (at < 0) return 0;
+    if (at === 0) return 3;
+    return /[\s\-_/.:·]/.test(text[at - 1]) ? 2 : 1;
+  }
+
+  // Every word typed must match the label or the keywords; a label match counts for more.
+  function paletteScore(item, query) {
+    const label = item.label.toLowerCase();
+    const extra = `${item.secondary} ${item.keywords || ""}`.toLowerCase();
+    let total = 0;
+    for (const term of query.toLowerCase().split(/\s+/).filter(Boolean)) {
+      const inLabel = matchScore(label, term);
+      const inExtra = matchScore(extra, term);
+      if (!inLabel && !inExtra) return 0;
+      total += inLabel ? 10 * inLabel : inExtra;
+    }
+    return total;
+  }
+
+  const PALETTE_SECTIONS = [["session", "Sessions"], ["group", "Groups"], ["action", "Actions"]];
+
+  // The rows to show, already in order: by section, and when filtering by score within each one.
+  function paletteResults(query) {
+    const all = paletteItems();
+    const typed = query.trim();
+    return PALETTE_SECTIONS.flatMap(([type]) => {
+      const own = all.filter((item) => item.type === type);
+      if (!typed) return own;
+      return own
+        .map((item) => ({ item, score: paletteScore(item, typed) }))
+        .filter((entry) => entry.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .map((entry) => entry.item);
+    });
+  }
+
+  function paletteRow(item, index) {
+    const mark = item.type === "session" ? kindMark(findSession(item.id).kind)
+      : item.type === "group" ? icon("folder")
+      : item.kind ? kindMark(item.kind) : icon(item.icon);
+    const mood = item.type === "session" ? stateOf(item.id) : null;
+    const right = item.type === "session"
+      ? [h("span", { class: "dot", "data-state": mood }), mood === "working" || mood === "done" ? STATE_WORD[mood] : null]
+      : (item.keys || []).map((key) => h("kbd", {}, key));
+    return h("div", {
+      class: "palette-row",
+      id: `palette-opt-${index}`,
+      role: "option",
+      "aria-selected": String(index === palette.active),
+      onmousemove: () => { if (palette.active !== index) setPaletteActive(index, false); },
+      onclick: () => runPaletteItem(index),
+    },
+    h("span", { class: "palette-mark" }, mark),
+    h("span", { class: "palette-label" }, item.label),
+    h("span", { class: "palette-secondary" }, item.secondary),
+    h("span", { class: "palette-right" }, right));
+  }
+
+  function renderPalette() {
+    const input = $("#palette-input");
+    const list = $("#palette-list");
+    const typed = input.value.trim();
+    palette.items = paletteResults(input.value);
+    palette.active = Math.min(palette.active, Math.max(0, palette.items.length - 1));
+    const nodes = [];
+    let lastType = null;
+    palette.items.forEach((item, index) => {
+      if (item.type !== lastType) {
+        lastType = item.type;
+        nodes.push(h("div", { class: "menu-heading palette-heading", role: "presentation" }, PALETTE_SECTIONS.find(([type]) => type === item.type)[1]));
+      }
+      nodes.push(paletteRow(item, index));
+    });
+    if (!nodes.length) nodes.push(h("div", { class: "palette-empty" }, typed ? "No matches" : "Nothing to show"));
+    list.replaceChildren(...nodes);
+    input.setAttribute("aria-activedescendant", palette.items.length ? `palette-opt-${palette.active}` : "");
+  }
+
+  // Moves the highlight. Hover must not scroll the list, or the row under the pointer would keep changing.
+  function setPaletteActive(index, scroll = true) {
+    if (!palette.items.length) return;
+    palette.active = (index + palette.items.length) % palette.items.length;
+    document.querySelectorAll("#palette-list .palette-row").forEach((row, i) =>
+      row.setAttribute("aria-selected", String(i === palette.active)));
+    const row = $(`#palette-opt-${palette.active}`);
+    $("#palette-input").setAttribute("aria-activedescendant", row.id);
+    if (scroll) {
+      row.scrollIntoView({ block: "nearest" });
+      // Scrolled up to the first row, show its section heading too.
+      if (palette.active === 0) $("#palette-list").scrollTop = 0;
+    }
+  }
+
+  // The palette closes first: the action may open a dialog of its own, which is refused while another is open.
+  function runPaletteItem(index) {
+    const item = palette.items[index];
+    if (!item) return;
+    el.paletteDialog.close();
+    item.run();
+  }
+
+  function openPalette() {
+    if (anyDialogOpen()) return;
+    closeMenu();
+    $("#palette-input").value = "";
+    palette.active = 0;
+    renderPalette();
+    el.paletteDialog.showModal();
+    syncBrowsers();
+    $("#palette-list").scrollTop = 0;
+    $("#palette-input").focus();
+  }
+
+  function onPaletteKeyDown(e) {
+    if (e.isComposing) return;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      setPaletteActive(palette.active + (e.key === "ArrowDown" ? 1 : -1));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      runPaletteItem(palette.active);
+    }
+  }
+
+  // Rebuilt on every open, so the voice keys shown are the ones set now.
+  function openShortcuts() {
+    if (anyDialogOpen()) return;
+    closeMenu();
+    const voice = hotkey();
+    const sections = [
+      ["Sessions", [
+        ["New session", KEYS.newSession],
+        ["Next session", KEYS.nextSession],
+        ["Previous session", KEYS.prevSession],
+        ["Next finished session", KEYS.nextFinished],
+        ["Expand or restore card", KEYS.expand],
+        ["Restore card", KEYS.restore],
+        ["New line in a session", KEYS.newLine],
+      ]],
+      ["Navigation", [
+        ["Quick switcher", KEYS.palette],
+        ["Home", KEYS.home],
+        ["Groups", KEYS.groups],
+        ["Settings", KEYS.settings],
+        ["This sheet", KEYS.shortcuts],
+      ]],
+      ["Voice", [[`Hold ${voice.label} to talk`, [...voice.symbol]]]],
+    ];
+    const column = (...picked) => h("div", { class: "shortcuts-col" }, picked.map(([title, rows]) =>
+      h("section", { class: "shortcuts-group" },
+        h("h3", { class: "menu-heading" }, title),
+        rows.map(([label, keys]) => h("div", { class: "shortcut-row" },
+          h("span", {}, label),
+          h("span", { class: "shortcut-keys" }, keys.map((key) => h("kbd", {}, key))))))));
+    $("#shortcuts-body").replaceChildren(column(sections[0]), column(sections[1], sections[2]));
+    el.shortcutsDialog.showModal();
+    syncBrowsers();
+  }
+
   // ---------------------------------------------------------------- events
 
   // Shortcuts that reach the terminal are also listed in handleTermKey, so the shell never sees them.
@@ -3368,8 +3621,21 @@
     }
     if (!e.metaKey || e.ctrlKey || e.altKey) return;
     closeMenu();
+    // The palette and the shortcuts sheet toggle themselves shut, so they are handled before the dialog check.
+    const slash = e.key === "/" || e.code === "Slash";
+    if ((e.key === "k" && el.paletteDialog.open) || (slash && el.shortcutsDialog.open)) {
+      e.preventDefault();
+      (e.key === "k" ? el.paletteDialog : el.shortcutsDialog).close();
+      return;
+    }
     if (anyDialogOpen()) return;
-    if (e.key === "n") {
+    if (e.key === "k") {
+      e.preventDefault();
+      openPalette();
+    } else if (slash) {
+      e.preventDefault();
+      openShortcuts();
+    } else if (e.key === "n") {
       e.preventDefault();
       openSessionDialog();
     } else if (/^[1-9]$/.test(e.key)) {
@@ -3410,7 +3676,7 @@
     $("#count-more").addEventListener("click", () => setCount(state.newCount + 1));
     bindImageViewer();
     window.addEventListener("resize", syncBrowsers);
-    [el.sessionDialog, el.confirmDialog, el.promptDialog].forEach((dialog) => dialog.addEventListener("close", syncBrowsers));
+    [el.sessionDialog, el.confirmDialog, el.promptDialog, el.paletteDialog, el.shortcutsDialog].forEach((dialog) => dialog.addEventListener("close", syncBrowsers));
     $("#browse").addEventListener("click", browseFolder);
     el.alertsToggle.addEventListener("click", toggleAlerts);
     el.typedSoundToggle.addEventListener("click", () => setSetting("typedSound", !settings.typedSound));
@@ -3420,9 +3686,11 @@
     el.historyToggle.addEventListener("click", () => setSetting("historyOn", !settings.historyOn));
     el.historyClear.addEventListener("click", clearHistory);
     bindHomeAndSettings();
+    $("#palette-input").addEventListener("input", () => { palette.active = 0; renderPalette(); });
+    $("#palette-input").addEventListener("keydown", onPaletteKeyDown);
     $("#session-cancel").addEventListener("click", () => el.sessionDialog.close());
     $("#new-session-form").addEventListener("submit", submitSession);
-    [el.sessionDialog, el.confirmDialog, el.promptDialog].forEach((dialog) =>
+    [el.sessionDialog, el.confirmDialog, el.promptDialog, el.paletteDialog, el.shortcutsDialog].forEach((dialog) =>
       dialog.addEventListener("mousedown", (e) => { if (e.target === dialog) dialog.close(); }));
 
     window.addEventListener("keydown", onDictationKeyDown, true);
