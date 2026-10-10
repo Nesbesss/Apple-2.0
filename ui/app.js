@@ -36,6 +36,8 @@
     copy: stroke('<rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M3.5 10.5v-6a1 1 0 0 1 1-1h6"/>'),
     stop: '<svg viewBox="0 0 16 16" fill="currentColor"><rect x="4" y="4" width="8" height="8" rx="1.5"/></svg>',
     home: stroke('<path d="M2.75 7.5 8 3.25l5.25 4.25V13a.75.75 0 0 1-.75.75H9.5V10h-3v3.75H3.5A.75.75 0 0 1 2.75 13z"/>'),
+    keyboard: stroke('<rect x="1.75" y="4" width="12.5" height="8" rx="1.5"/><path d="M4.5 6.75h.01M7 6.75h.01M9.5 6.75h.01M12 6.75h-.5M5 9.5h6"/>'),
+    sidebar: stroke('<rect x="2.5" y="3" width="11" height="10" rx="1.5"/><path d="M6.25 3v10"/>'),
     gear: stroke('<circle cx="8" cy="8" r="2"/><path d="M8 1.75v1.7M8 12.55v1.7M1.75 8h1.7M12.55 8h1.7M3.55 3.55l1.2 1.2M11.25 11.25l1.2 1.2M3.55 12.45l1.2-1.2M11.25 4.75l1.2-1.2"/>'),
   };
 
@@ -159,6 +161,22 @@
       try { localStorage.setItem(key, value); } catch { /* storage unavailable */ }
     },
   };
+
+  // Collapsed groups, kept by name: groups have no id, and their indexes shift when one moves or goes.
+  // A rename moves the entry (see commitRename), a delete drops it. Two groups with one name fold together.
+  const collapsedGroups = new Set((() => {
+    try { return JSON.parse(stored.get("collapsedGroups") || "[]"); } catch { return []; }
+  })());
+  const saveCollapsed = () => stored.set("collapsedGroups", JSON.stringify([...collapsedGroups]));
+  const isCollapsed = (name) => collapsedGroups.has(name);
+
+  function setCollapsed(name, collapsed) {
+    if (collapsedGroups.has(name) === collapsed) return;
+    if (collapsed) collapsedGroups.add(name);
+    else collapsedGroups.delete(name);
+    saveCollapsed();
+    renderSidebar();
+  }
 
   // -------------------------------------------------------------- settings
 
@@ -467,7 +485,7 @@
 
   function toast(message, kind = "error") {
     const mark = TOAST_ICON[kind] ? h("span", { class: "toast-icon", html: ICONS[TOAST_ICON[kind]] }) : null;
-    const node = h("div", { class: `toast ${kind}`, role: "status" }, mark, h("span", { class: "toast-text" }, errorText(message)));
+    const node = h("div", { class: `toast ${kind}` }, mark, h("span", { class: "toast-text" }, errorText(message)));
     el.toasts.append(node);
     let timer = null;
     const dismiss = () => {
@@ -570,7 +588,12 @@
 
   // A finished session glows once in the sidebar, so it is easy to spot among the others.
   function flashRow(id) {
-    const row = el.groupList.querySelector(`.session-row[data-id="${id}"]`);
+    let row = el.groupList.querySelector(`.session-row[data-id="${id}"]`);
+    if (!row) {
+      // Inside a collapsed group the row is not drawn, so the group's header glows instead.
+      const index = groups().findIndex((g) => g.sessions.some((s) => s.id === id));
+      row = el.groupList.querySelector(`.group[data-index="${index}"] > .group-row`);
+    }
     if (row) replayClass(row, "flash");
   }
 
@@ -626,7 +649,7 @@
   // Returns false for keys xterm must not forward to the shell. Every app shortcut listed in
   // onKeyDown belongs here too, or the shell would receive it as well.
   function handleTermKey(id, e) {
-    if (e.metaKey && (e.key === "n" || e.key === "[" || e.key === "]" || e.key === "j" || e.key === "Enter" || e.key === "," || e.key === "k" || e.key === "/" || e.code === "Slash" || /^[0-9]$/.test(e.key))) return false;
+    if (e.metaKey && (e.key === "n" || e.key === "[" || e.key === "]" || e.key === "j" || e.key === "b" || e.key === "k" || e.key === "/" || e.code === "Slash" || e.key === "Enter" || e.key === "," || /^[0-9]$/.test(e.key))) return false;
     if (e.key === "Enter" && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
       if (e.type === "keydown") invoke("write_pty", { id, data: "\x1b\r" }).catch(() => {});
       return false; // ESC + CR makes Claude Code insert a newline
@@ -1002,8 +1025,8 @@
     showMenu(rect.right, rect.bottom + 4, sessionMenuItems(id), { alignRight: true });
   }
 
-  function openSessionMenu(id, x, y) {
-    showMenu(x, y, sessionMenuItems(id));
+  function openSessionMenu(id, x, y, options) {
+    showMenu(x, y, sessionMenuItems(id), options);
   }
 
   // Selects the session's group if needed, then brings its card to the front.
@@ -1011,6 +1034,8 @@
   function focusSession(id) {
     const index = groups().findIndex((g) => g.sessions.some((s) => s.id === id));
     if (index < 0) return;
+    // A session inside a folded group has no row to show where it went, so unfold the group.
+    if (collapsedGroups.delete(groups()[index].name)) saveCollapsed();
     if (index !== state.selected) {
       state.selected = index;
       state.maximizedId = null;
@@ -1061,6 +1086,27 @@
     renderGrid();
   }
 
+  // ⌘B: hide the sidebar so the cards get the whole window. It only applies to a group's view; Home and
+  // Settings keep it, since the window's traffic lights sit over its top corner. The CSS keys off the
+  // body classes sidebar-hidden and view-group, so the stored choice comes back when a group is opened.
+  let sidebarHidden = stored.get("sidebarHidden") === "1";
+
+  function applySidebar() {
+    document.body.classList.toggle("sidebar-hidden", sidebarHidden);
+    const label = `${sidebarHidden ? "Show" : "Hide"} sidebar (⌘B)`;
+    $("#sidebar-hide").title = label;
+    $("#sidebar-show").title = label;
+  }
+
+  function toggleSidebar() {
+    if (state.view !== "group") { toast("The sidebar stays on Home and Settings", "info"); return; }
+    sidebarHidden = !sidebarHidden;
+    stored.set("sidebarHidden", sidebarHidden ? "1" : "0");
+    applySidebar();
+    // The cards moved without the window resizing, so the native browser pages are left where they were.
+    requestAnimationFrame(syncBrowsers);
+  }
+
   function renderView() {
     const view = state.view;
     el.toolbar.hidden = view !== "group";
@@ -1079,9 +1125,18 @@
     if (view === "settings") renderSettings();
   }
 
+  // The whole list is rebuilt on every store change, which would drop keyboard focus. Note which row has it.
+  function focusedRowSelector() {
+    const row = document.activeElement && document.activeElement.closest(".session-row, .group-row");
+    if (!row || !el.groupList.contains(row)) return null;
+    if (row.dataset.id) return `.session-row[data-id="${row.dataset.id}"]`;
+    return `.group[data-index="${row.closest(".group").dataset.index}"] > .group-row`;
+  }
+
   function renderSidebar() {
     const input = el.groupList.querySelector(".group-rename");
     if (input) input.dataset.dead = "1"; // the blur from replacing it must not commit
+    const refocus = focusedRowSelector();
 
     el.groupList.replaceChildren(...groups().map((group, index) => {
       const renaming = state.renaming === index;
@@ -1098,16 +1153,31 @@
             ondblclick: (e) => e.stopPropagation(),
           })
         : h("span", { class: "group-name" }, group.name);
+      const folded = isCollapsed(group.name);
+      // The chevron has no tab stop of its own: the row is the stop, and Left and Right fold and unfold it.
+      const chevron = h("button", {
+        class: `group-chevron${folded ? "" : " open"}`,
+        type: "button",
+        tabindex: "-1",
+        "aria-expanded": String(!folded),
+        "aria-label": `${folded ? "Expand" : "Collapse"} ${group.name}`,
+        html: ICONS.forward,
+        onclick: (e) => { e.stopPropagation(); setCollapsed(group.name, !folded); },
+        ondblclick: (e) => e.stopPropagation(), // two quick clicks fold and unfold, they do not rename
+      });
       const header = h("div", {
         class: `group-row${index === state.selected && state.view === "group" ? " selected" : ""}`,
         role: "button",
+        tabindex: "0",
         draggable: renaming ? null : "true", // a group being renamed is not dragged
         ondragstart: (e) => onGroupDragStart(e, index),
         ondragend: () => endDrag(),
         onclick: () => selectGroup(index),
         ondblclick: () => startRename(index),
         oncontextmenu: (e) => { e.preventDefault(); openGroupMenu(e, index); },
-      }, name,
+        onkeydown: (e) => onGroupRowKey(e, index),
+      }, chevron, name,
+        renaming ? null : moreButton(`Actions for ${group.name}`, (x, y, options) => openGroupMenu({ clientX: x, clientY: y }, index, options)),
         group.sessions.length ? h("span", { class: "group-count" }, String(group.sessions.length)) : null,
         h("span", { class: "dot", "data-group-dot": "" }));
       // The wrapper is the drop target, so the session list under the header takes drops too.
@@ -1117,9 +1187,11 @@
         ondragover: (e) => onGroupDragOver(e, index),
         ondragleave: (e) => onGroupDragLeave(e),
         ondrop: (e) => onGroupDrop(e, index),
-      }, header, group.sessions.length ? h("div", { class: "session-list" }, group.sessions.map((session, i) => sessionRow(session, index, i))) : null);
+      }, header, group.sessions.length && !folded ? h("div", { class: "session-list" }, group.sessions.map((session, i) => sessionRow(session, index, i))) : null);
     }));
 
+    const back = refocus && el.groupList.querySelector(refocus);
+    if (back) back.focus({ preventScroll: true });
     const field = el.groupList.querySelector(".group-rename");
     if (field) {
       field.focus();
@@ -1134,10 +1206,12 @@
     return h("div", {
       class: `session-row${state.focusedId === id ? " focused" : ""}`,
       role: "button",
+      tabindex: "0",
       title: session.cwd,
       "data-id": id,
       draggable: "true",
       onclick: () => focusSession(id),
+      onkeydown: (e) => onSessionRowKey(e, id),
       ondblclick: () => renameSession(id),
       oncontextmenu: (e) => { e.preventDefault(); openSessionMenu(id, e.clientX, e.clientY); },
       ondragstart: (e) => onSessionDragStart(e, id),
@@ -1148,7 +1222,62 @@
     },
       kindMark(session.kind),
       h("span", { class: "session-name" }, session.name),
+      moreButton(`Actions for ${session.name}`, (x, y, options) => openSessionMenu(id, x, y, options)),
       h("span", { class: "dot", "data-session-dot": id }));
+  }
+
+  // The "…" that shows on a hovered or focused sidebar row and opens the row's menu, like a right-click does.
+  // It is hidden with opacity, not display, so the row keeps its layout. It is not a tab stop: the key for the
+  // menu is Shift+F10 on the row.
+  function moreButton(label, open) {
+    return h("button", {
+      class: "side-more",
+      type: "button",
+      tabindex: "-1",
+      "aria-label": label,
+      html: ICONS.more,
+      onclick: (e) => {
+        e.stopPropagation();
+        const rect = e.currentTarget.getBoundingClientRect();
+        open(rect.right, rect.bottom + 4, { alignRight: true });
+      },
+      ondblclick: (e) => e.stopPropagation(),
+    });
+  }
+
+  // Keys on a focused sidebar row. Keys typed in the rename field, or on a button inside the row, are theirs.
+  function onRowKey(e, { activate, menu, rename }) {
+    if (e.target !== e.currentTarget || e.metaKey || e.ctrlKey || e.altKey) return false;
+    if (e.key === "Enter" || e.key === " ") activate();
+    else if (e.key === "F2") rename();
+    else if (e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) {
+      const rect = e.currentTarget.getBoundingClientRect();
+      menu(rect.left + 28, rect.bottom);
+    } else return false;
+    e.preventDefault();
+    return true;
+  }
+
+  function onSessionRowKey(e, id) {
+    onRowKey(e, {
+      activate: () => focusSession(id),
+      rename: () => renameSession(id),
+      menu: (x, y) => openSessionMenu(id, x, y),
+    });
+  }
+
+  function onGroupRowKey(e, index) {
+    const name = groups()[index].name;
+    if (onRowKey(e, {
+      activate: () => selectGroup(index),
+      rename: () => startRename(index),
+      menu: (x, y) => openGroupMenu({ clientX: x, clientY: y }, index),
+    })) return;
+    if (e.target !== e.currentTarget || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      e.preventDefault();
+      setCollapsed(name, e.key === "ArrowLeft");
+    }
   }
 
   // Drag a session row onto another group to move it there. The id lives in state because
@@ -1398,9 +1527,11 @@
     const unchanged = !name || name === groups()[index].name;
     state.renaming = null;
     if (unchanged) { renderSidebar(); return; }
+    const old = groups()[index].name;
     const result = await attempt("rename_group", { index, name });
-    if (result.ok) applyStore(result.value);
-    else renderSidebar();
+    if (!result.ok) { renderSidebar(); return; }
+    if (collapsedGroups.delete(old)) { collapsedGroups.add(name); saveCollapsed(); }
+    applyStore(result.value);
   }
 
   async function createGroup() {
@@ -1429,17 +1560,21 @@
     if (!ok) return;
     const result = await attempt("delete_group", { index });
     if (!result.ok) return;
+    // Another group with the same name keeps the fold.
+    if (!groups().some((g, i) => i !== index && g.name === group.name) && collapsedGroups.delete(group.name)) saveCollapsed();
     if (index < state.selected) state.selected -= 1;
     if (index === state.selected) { state.maximizedId = null; state.focusedId = null; }
     applyStore(result.value);
   }
 
-  function openGroupMenu(e, index) {
+  function openGroupMenu(e, index, options) {
     const onlyOne = groups().length <= 1;
+    const name = groups()[index].name;
     showMenu(e.clientX, e.clientY, [
+      { label: isCollapsed(name) ? "Expand" : "Collapse", onSelect: () => setCollapsed(name, !isCollapsed(name)) },
       { label: "Rename", onSelect: () => startRename(index) },
       { label: "Delete", danger: true, disabled: onlyOne, onSelect: () => deleteGroup(index) },
-    ]);
+    ], options);
   }
 
   // Store is the source of truth: every render starts here.
@@ -2487,8 +2622,16 @@
     return { share: used / 100, text, title: `${asOf} ${pace}` };
   }
 
+  // The meter has room for one short figure: "52% · resets in 1h 30m" shows as "52%", and a sentence such as
+  // "no 5h report yet" as a dash. The hover panel keeps the full text.
+  function compactUsage(text) {
+    const first = text.split(" · ")[0].replace(/ in 5h$/, "");
+    return first.length > 6 ? "–" : first;
+  }
+
   function setUsageRow(row, share, text, title) {
-    row.querySelector(".usage-text").textContent = text;
+    row.querySelector(".usage-text").textContent = compactUsage(text);
+    row.dataset.full = text;
     row.dataset.note = title; // the full sentence, shown in the hover panel
     const fill = Math.min(1, Math.max(0, share ?? 0));
     row.querySelector(".usage-fill").style.width = `${(fill * 100).toFixed(1)}%`;
@@ -2561,7 +2704,7 @@
       ...rows.map((row) => h("div", { class: "usage-detail-item" },
         h("div", { class: "usage-detail-line" },
           h("strong", {}, row.querySelector(".usage-name").textContent),
-          h("span", {}, row.querySelector(".usage-text").textContent)),
+          h("span", {}, row.dataset.full || row.querySelector(".usage-text").textContent)),
         h("p", { class: "usage-detail-note" }, row.dataset.note || ""))),
       h("p", { class: "usage-detail-foot" }, updated));
   }
@@ -3455,6 +3598,7 @@
     groups: ["⌘", "1–9"],
     settings: ["⌘", ","],
     shortcuts: ["⌘", "/"],
+    sidebar: ["⌘", "B"],
   };
 
   const SETTINGS_SECTIONS = [
@@ -3487,7 +3631,15 @@
         when: () => state.view === "group" && !!state.focusedId,
         run: () => toggleMaximize(state.focusedId),
       },
-      { label: "Keyboard shortcuts", icon: "sparkle", keywords: "keys help hotkeys", keys: KEYS.shortcuts, run: openShortcuts },
+      {
+        label: sidebarHidden ? "Show sidebar" : "Hide sidebar",
+        icon: "sidebar",
+        keywords: "focus full width room panel toggle",
+        keys: KEYS.sidebar,
+        when: () => state.view === "group",
+        run: toggleSidebar,
+      },
+      { label: "Keyboard shortcuts", icon: "keyboard", keywords: "keys help hotkeys", keys: KEYS.shortcuts, run: openShortcuts },
       ...SETTINGS_SECTIONS.map(([id, name, words]) => ({
         label: `Settings: ${name}`,
         icon: "gear",
@@ -3571,7 +3723,7 @@
       : item.kind ? kindMark(item.kind) : icon(item.icon);
     const mood = item.type === "session" ? stateOf(item.id) : null;
     const right = item.type === "session"
-      ? [h("span", { class: "dot", "data-state": mood }), mood === "working" || mood === "done" ? STATE_WORD[mood] : null]
+      ? [mood === "idle" ? null : h("span", { class: "dot", "data-state": mood }), mood === "working" || mood === "done" ? STATE_WORD[mood] : null]
       : (item.keys || []).map((key) => h("kbd", {}, key));
     return h("div", {
       class: "palette-row",
@@ -3673,6 +3825,7 @@
         ["Home", KEYS.home],
         ["Groups", KEYS.groups],
         ["Settings", KEYS.settings],
+        ["Hide or show the sidebar", KEYS.sidebar],
         ["This sheet", KEYS.shortcuts],
       ]],
       ["Voice", [[`Hold ${voice.label} to talk`, [...voice.symbol]]]],
@@ -3738,6 +3891,9 @@
     } else if (e.key === "j") {
       e.preventDefault();
       jumpToFinished();
+    } else if (e.key === "b") {
+      e.preventDefault();
+      toggleSidebar();
     } else if (e.key === "Enter") {
       e.preventDefault();
       if (state.focusedId) toggleMaximize(state.focusedId);
@@ -3749,6 +3905,9 @@
     document.querySelectorAll("[data-icon]").forEach((node) => { node.innerHTML = ICONS[node.dataset.icon]; });
 
     $("#new-group").addEventListener("click", createGroup);
+    $("#sidebar-hide").addEventListener("click", toggleSidebar);
+    $("#sidebar-show").addEventListener("click", toggleSidebar);
+    applySidebar();
     $("#new-claude").addEventListener("click", () => openSessionDialog("claude"));
     $("#new-codex").addEventListener("click", () => openSessionDialog("codex"));
     $("#new-terminal").addEventListener("click", () => openSessionDialog("terminal"));
