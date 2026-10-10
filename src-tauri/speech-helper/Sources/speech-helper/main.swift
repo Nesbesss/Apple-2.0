@@ -27,6 +27,7 @@
 //           {"event":"paste","ok":true,"app":"Notes"} or {"event":"paste","ok":false,"reason":"..."}
 
 import AVFAudio
+import FluidAudio
 import AVFoundation
 import AppKit
 import ApplicationServices
@@ -713,11 +714,150 @@ enum Corrections {
     }
 }
 
+// MARK: - Parakeet
+//
+// Parakeet TDT 0.6B (FluidAudio), in batch mode. The audio of a hold is kept. While the user speaks it is
+// transcribed again about once a second, so the pill shows the words as they come. On release the whole hold
+// is transcribed once more, and that text is typed. Apple's engine serves holds while Parakeet is downloading.
+//
+// Vocabulary boosting (FluidAudio's CTC pass) is not used: on these models it inserted vocabulary words into
+// unrelated speech, so the words list does not bias Parakeet. "Often heard as" fixes and learned corrections
+// still apply, because they change the text after recognition.
+
+/// Microphone audio at 16 kHz mono, gathered while a hold is open. The tap appends; the ticker and release read.
+final class SampleBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var samples: [Float] = []
+
+    func append(_ more: [Float]) {
+        lock.lock()
+        samples += more
+        lock.unlock()
+    }
+
+    func snapshot() -> [Float] {
+        lock.lock()
+        defer { lock.unlock() }
+        return samples
+    }
+}
+
+@available(macOS 26.0, *)
+actor Parakeet {
+    private var asr: AsrManager?
+    private(set) var isReady = false
+    private var session: Session?
+
+    private struct Session {
+        let engine: AVAudioEngine
+        let input: AVAudioInputNode
+        let samples: SampleBuffer
+        let ticker: Task<Void, Never>
+    }
+
+    /// How often the words on the pill are refreshed while the user speaks.
+    static let partialInterval: UInt64 = 1_000_000_000
+    /// Half a second at 16 kHz: less audio than this has no words worth transcribing.
+    static let minimumSamples = 8_000
+
+    /// Downloads and loads the model once, at launch. Until it is ready, holds use Apple's engine.
+    func prewarm() async {
+        do {
+            let directory = AsrModels.defaultCacheDirectory(for: .ultra)
+            if !AsrModels.modelsExist(at: directory, version: .ultra) {
+                Out.send(["event": "state", "state": "downloading"])
+            }
+            let models = try await AsrModels.downloadAndLoad(version: .ultra, encoderPrecision: .int8)
+            let manager = AsrManager(config: .default)
+            try await manager.loadModels(models)
+            asr = manager
+            isReady = true
+            Out.send(["event": "engine", "name": "parakeet", "state": "ready"])
+        } catch {
+            Out.send(["event": "error", "message": "Parakeet could not load: \(message(error))"])
+        }
+    }
+
+    /// Opens the microphone and starts refreshing the words on the pill.
+    func start() async throws {
+        guard session == nil else { return }
+        guard let asr else { throw DictationError.noAudioFormat }
+        if AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
+            _ = await AVCaptureDevice.requestAccess(for: .audio)
+        }
+        guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else {
+            throw DictationError.microphoneDenied
+        }
+
+        // A new engine per hold, so a change of microphone is picked up without a special case.
+        let engine = AVAudioEngine()
+        let input = engine.inputNode
+        let hardware = input.outputFormat(forBus: 0)
+        guard hardware.sampleRate > 0, hardware.channelCount > 0 else { throw DictationError.noMicrophone }
+
+        let converter = AudioConverter()
+        let samples = SampleBuffer()
+        let meter = LevelMeter()
+        input.installTap(onBus: 0, bufferSize: 2048, format: hardware) { buffer, _ in
+            meter.observe(buffer)
+            if let chunk = try? converter.resampleBuffer(buffer) {
+                samples.append(chunk)
+            }
+        }
+        engine.prepare()
+        do {
+            try engine.start()
+        } catch {
+            input.removeTap(onBus: 0)
+            throw error
+        }
+
+        let ticker = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: Parakeet.partialInterval)
+                guard !Task.isCancelled else { break }
+                let audio = samples.snapshot()
+                guard audio.count >= Parakeet.minimumSamples else { continue }
+                var state = TdtDecoderState.make()
+                let result = try? await asr.transcribe(audio, decoderState: &state)
+                // A result that lands after release must not overwrite the final text on the pill.
+                guard !Task.isCancelled, let result else { continue }
+                Out.send(["event": "partial", "text": result.text])
+            }
+        }
+        Out.send(["event": "listening"])
+        session = Session(engine: engine, input: input, samples: samples, ticker: ticker)
+    }
+
+    /// Stops the microphone and transcribes the whole hold. The returned text is what gets typed.
+    func stop() async throws -> String {
+        guard let session else { return "" }
+        self.session = nil
+        session.engine.stop()
+        session.input.removeTap(onBus: 0)
+        session.ticker.cancel()
+        let audio = session.samples.snapshot()
+        guard audio.count >= Parakeet.minimumSamples, let asr else { return "" }
+        var state = TdtDecoderState.make()
+        return try await asr.transcribe(audio, decoderState: &state).text
+    }
+
+    func cancel() {
+        guard let session else { return }
+        self.session = nil
+        session.engine.stop()
+        session.input.removeTap(onBus: 0)
+        session.ticker.cancel()
+    }
+}
+
 /// One line from the app: a command, and for `start`, the vocabulary to expect during that hold.
 struct Request {
     let cmd: String
     let words: [String]
     let builtin: Bool
+    /// "parakeet" or "apple". Only `start` uses it.
+    let engine: String
 }
 
 let (requests, requestInput) = AsyncStream<Request>.makeStream()
@@ -744,7 +884,8 @@ Thread.detachNewThread {
         default:
             let words = object["words"] as? [String] ?? []
             let builtin = object["builtin"] as? Bool ?? true
-            requestInput.yield(Request(cmd: cmd, words: words, builtin: builtin))
+            let engine = object["engine"] as? String ?? "parakeet"
+            requestInput.yield(Request(cmd: cmd, words: words, builtin: builtin, engine: engine))
         }
     }
     requestInput.finish()
@@ -754,17 +895,42 @@ Thread.detachNewThread {
 Task {
     if #available(macOS 26.0, *) {
         let dictation = Dictation()
+        let parakeet = Parakeet()
         NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: nil, queue: nil) { _ in
             Task { await dictation.forgetEngine() }
         }
+        // Parakeet loads in the background, so Apple's engine can serve holds until it is ready.
+        Task { await parakeet.prewarm() }
         await dictation.prewarm()
         Out.send(["event": "ready"])
+        // Which engine the current hold runs on. Stop and cancel follow it, so a hold always ends where it began.
+        var holdOnParakeet = false
         // Requests run one at a time, so a stop that arrives during start waits for it.
         for await request in requests {
             switch request.cmd {
-            case "start": await dictation.start(hints: contextualHints(request.words, builtin: request.builtin))
-            case "stop": await dictation.stop()
-            case "cancel": await dictation.cancel()
+            case "start":
+                let hints = contextualHints(request.words, builtin: request.builtin)
+                if request.engine == "parakeet", await parakeet.isReady {
+                    holdOnParakeet = true
+                    do { try await parakeet.start() } catch { Out.send(["event": "error", "message": message(error)]) }
+                } else {
+                    holdOnParakeet = false
+                    if request.engine == "parakeet" { Out.send(["event": "engine", "used": "apple"]) }
+                    await dictation.start(hints: hints)
+                }
+            case "stop":
+                if holdOnParakeet {
+                    do { Out.send(["event": "final", "text": try await parakeet.stop()]) } catch { Out.send(["event": "error", "message": message(error)]) }
+                } else {
+                    await dictation.stop()
+                }
+            case "cancel":
+                if holdOnParakeet {
+                    await parakeet.cancel()
+                    Out.send(["event": "cancelled"])
+                } else {
+                    await dictation.cancel()
+                }
             default: Out.send(["event": "error", "message": "Unknown command \(request.cmd)"])
             }
         }

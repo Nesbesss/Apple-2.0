@@ -130,6 +130,8 @@
     statusColors: $("#status-colors"),
     alertsToggle: $("#alerts-toggle"),
     pingChoices: $("#ping-choices"),
+    speechEngineChoices: $("#speech-engine-choices"),
+    speechEngineHint: $("#speech-engine-hint"),
     afterTypingChoices: $("#after-typing-choices"),
     afterTypingHint: $("#after-typing-hint"),
     typedSoundToggle: $("#typed-sound-toggle"),
@@ -140,6 +142,7 @@
     vocabHeard: $("#vocab-heard"),
     vocabError: $("#vocab-error"),
     vocabCount: $("#vocab-count"),
+    vocabEngineNote: $("#vocab-engine-note"),
     vocabList: $("#vocab-list"),
     historyToggle: $("#history-toggle"),
     historyKeepChoices: $("#history-keep-choices"),
@@ -189,7 +192,7 @@
   // vocabulary is a list of { word, heardAs }. historyKeep is how many dictated entries to keep.
   const DEFAULT_SETTINGS = {
     accent: "#7c9cff", surface: "default", done: "#4ac26b", fail: "#f06b6b", claude: "#d97757", hotkey: "alt", donePing: "Chime", claudeLimit: 0, claudeLimitAt: 0,
-    vocabulary: [], builtinWords: true, learnCorrections: true, afterTyping: "none", typedSound: true, historyOn: true, historyKeep: 200,
+    vocabulary: [], builtinWords: true, learnCorrections: true, speechEngine: "parakeet", afterTyping: "none", typedSound: true, historyOn: true, historyKeep: 200,
   };
   const SURFACES = {
     default: { label: "Default", canvas: "#121213", sidebar: "#171718", card: "#1c1c1e" },
@@ -221,6 +224,11 @@
   // default. The backend keeps the same list and refuses any other name.
   const DONE_PINGS = ["Chime", "Marimba", "Harp", "Droplet", "Glow", "Lift", "Knock", "Twinkle", "Pluck", "Echo", "Ripple"];
   // What happens after the words are typed. "return" presses Enter so the agent runs the prompt.
+  // Parakeet runs on this Mac once its model is downloaded. Apple's engine is the built-in fallback.
+  const SPEECH_ENGINES = {
+    parakeet: { label: "Parakeet", hint: "Runs on this Mac. The first start downloads its model, about 0.7 GB." },
+    apple: { label: "Apple", hint: "Apple's built-in dictation. Nothing to download." },
+  };
   const AFTER_TYPING = {
     none: { label: "Nothing", hint: "Leave the cursor after the words." },
     space: { label: "A space", hint: "Ready for the next thing you say." },
@@ -254,6 +262,7 @@
       vocabulary: pick("vocabulary", isVocabulary),
       builtinWords: pick("builtinWords", isBoolean),
       learnCorrections: pick("learnCorrections", isBoolean),
+      speechEngine: pick("speechEngine", (value) => Object.keys(SPEECH_ENGINES).includes(value)),
       afterTyping: pick("afterTyping", (value) => Object.keys(AFTER_TYPING).includes(value)),
       typedSound: pick("typedSound", isBoolean),
       historyOn: pick("historyOn", isBoolean),
@@ -307,6 +316,9 @@
     el.builtinToggle.setAttribute("aria-checked", String(settings.builtinWords));
     el.learnToggle.setAttribute("aria-checked", String(settings.learnCorrections));
     el.vocabCount.textContent = list.length ? `${list.length} of ${VOCABULARY_MAX} words.` : "No words yet.";
+    // Parakeet reads the words only after it has written the text, so they do not steer it. Apple's engine does.
+    el.vocabEngineNote.hidden = settings.speechEngine !== "parakeet";
+    el.vocabEngineNote.textContent = "Parakeet does not take these words as hints, so they do not steer it. \"Often heard as\" fixes still apply to its text.";
     el.vocabList.replaceChildren(...list.map((entry, index) => h("li", { class: "vocab-item" },
       h("span", { class: "vocab-word" }, entry.word),
       entry.learned ? h("span", { class: "vocab-badge", title: "Learned from your corrections" }, "learned") : null,
@@ -2539,6 +2551,9 @@
     el.pingChoices.replaceChildren(...DONE_PINGS.map((name) => h("span", { class: "ping-option" },
       choice(name === settings.donePing, () => chooseDonePing(name), name),
       h("button", { class: "ping-preview", type: "button", title: `Preview ${name}`, "aria-label": `Preview ${name}`, onclick: () => previewDonePing(name) }))));
+    el.speechEngineChoices.replaceChildren(...Object.keys(SPEECH_ENGINES).map((key) =>
+      choice(key === settings.speechEngine, () => setSetting("speechEngine", key), SPEECH_ENGINES[key].label)));
+    el.speechEngineHint.textContent = SPEECH_ENGINES[settings.speechEngine].hint;
     el.afterTypingChoices.replaceChildren(...Object.keys(AFTER_TYPING).map((key) =>
       choice(key === settings.afterTyping, () => setSetting("afterTyping", key), AFTER_TYPING[key].label)));
     el.afterTypingHint.textContent = AFTER_TYPING[settings.afterTyping].hint;
@@ -3410,7 +3425,7 @@
     });
     playSound("start");
     if (!dictation.frame) animateHud();
-    attempt("dictation_start", { words: vocabularyWords(), builtin: settings.builtinWords }).then((result) => {
+    attempt("dictation_start", { words: vocabularyWords(), builtin: settings.builtinWords, engine: settings.speechEngine }).then((result) => {
       if (!result.ok) cancelDictation();
     });
   }
@@ -3662,6 +3677,10 @@
         break;
       case "paste":
         onPasteResult(event);
+        break;
+      case "engine":
+        // Parakeet was chosen but its model is not loaded yet, so this hold used Apple's engine.
+        if (event.used === "apple") toast("Parakeet is still getting ready, so Apple's engine took this one.", "ok");
         break;
       case "learned":
         applyLearned(event.pairs);

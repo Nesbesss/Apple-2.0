@@ -206,6 +206,14 @@
           </header>
           <div class="voice-summary" id="voice-summary"></div>
           <div class="s-card">
+            <div class="setting-row">
+              <span class="setting-label">Speech engine
+                <small>What turns your voice into words.</small></span>
+              <div class="setting-control setting-control-col">
+                <div class="seg" id="speech-engine-choices" role="radiogroup" aria-label="Speech engine" aria-describedby="speech-engine-hint"></div>
+                <small class="seg-hint" id="speech-engine-hint"></small>
+              </div>
+            </div>
             <div class="setting-stack">
               <span class="setting-label">Voice mode keys
                 <small>Hold these keys to talk.</small></span>
@@ -273,6 +281,7 @@
               <p class="form-error" id="vocab-error" role="alert" hidden></p>
             </div>
             <div class="s-block">
+              <p class="setting-hint" id="vocab-engine-note" hidden></p>
               <div class="s-subhead"><span>Your words</span><span class="s-count" id="vocab-count"></span></div>
               <ul class="vocab-list" id="vocab-list"></ul>
             </div>

@@ -297,10 +297,11 @@ fn send(app: &AppHandle, state: &AppState, request: Value) -> CmdResult<()> {
 }
 
 /// Starts listening. `words` is the user's vocabulary, and `builtin` says whether Nesa's own developer
-/// words go in too. Both travel with every start, so a helper that was restarted still gets them.
+/// words go in too. `engine` is "parakeet" or "apple". All of it travels with every start, so a helper
+/// that was restarted still gets it.
 #[tauri::command]
-pub fn dictation_start(app: AppHandle, state: State<'_, AppState>, words: Vec<String>, builtin: bool) -> CmdResult<()> {
-    send(&app, state.inner(), json!({ "cmd": "start", "words": clean_words(words), "builtin": builtin }))
+pub fn dictation_start(app: AppHandle, state: State<'_, AppState>, words: Vec<String>, builtin: bool, engine: String) -> CmdResult<()> {
+    send(&app, state.inner(), json!({ "cmd": "start", "words": clean_words(words), "builtin": builtin, "engine": engine }))
 }
 
 #[tauri::command]
