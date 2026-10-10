@@ -3092,8 +3092,8 @@
     if (card) {
       // paste() honours bracketed paste, so newlines do not submit the prompt early.
       card.term.paste(settings.afterTyping === "space" ? `${spoken} ` : spoken);
-      // Return is written straight to the session, after the paste, so the agent runs the words as a prompt.
-      if (settings.afterTyping === "return") invoke("write_pty", { id: card.id, data: "\r" }).catch(() => {});
+      // Return goes to the session after a short pause, so it reads as a keypress and not as more pasted text.
+      if (settings.afterTyping === "return") setTimeout(() => invoke("write_pty", { id: card.id, data: "\r" }).catch(() => {}), 50);
       const session = findSession(card.id);
       recordHistory(spoken, session ? session.name : "");
       setHud("done", { label: `Typed into ${session ? session.name : "the session"}`, words: tail(spoken), kind: "tail", meta: "", warn: false });
