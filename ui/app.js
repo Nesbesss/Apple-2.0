@@ -134,6 +134,7 @@
     afterTypingHint: $("#after-typing-hint"),
     typedSoundToggle: $("#typed-sound-toggle"),
     builtinToggle: $("#builtin-toggle"),
+    learnToggle: $("#learn-toggle"),
     vocabForm: $("#vocab-form"),
     vocabWord: $("#vocab-word"),
     vocabHeard: $("#vocab-heard"),
@@ -188,7 +189,7 @@
   // vocabulary is a list of { word, heardAs }. historyKeep is how many dictated entries to keep.
   const DEFAULT_SETTINGS = {
     accent: "#7c9cff", surface: "default", done: "#4ac26b", fail: "#f06b6b", claude: "#d97757", hotkey: "alt", donePing: "Chime", claudeLimit: 0, claudeLimitAt: 0,
-    vocabulary: [], builtinWords: true, afterTyping: "none", typedSound: true, historyOn: true, historyKeep: 200,
+    vocabulary: [], builtinWords: true, learnCorrections: true, afterTyping: "none", typedSound: true, historyOn: true, historyKeep: 200,
   };
   const SURFACES = {
     default: { label: "Default", canvas: "#121213", sidebar: "#171718", card: "#1c1c1e" },
@@ -252,6 +253,7 @@
       claudeLimitAt: pick("claudeLimitAt", (value) => Number.isFinite(value) && value >= 0),
       vocabulary: pick("vocabulary", isVocabulary),
       builtinWords: pick("builtinWords", isBoolean),
+      learnCorrections: pick("learnCorrections", isBoolean),
       afterTyping: pick("afterTyping", (value) => Object.keys(AFTER_TYPING).includes(value)),
       typedSound: pick("typedSound", isBoolean),
       historyOn: pick("historyOn", isBoolean),
@@ -303,9 +305,11 @@
   function renderVocabulary() {
     const list = settings.vocabulary;
     el.builtinToggle.setAttribute("aria-checked", String(settings.builtinWords));
+    el.learnToggle.setAttribute("aria-checked", String(settings.learnCorrections));
     el.vocabCount.textContent = list.length ? `${list.length} of ${VOCABULARY_MAX} words.` : "No words yet.";
     el.vocabList.replaceChildren(...list.map((entry, index) => h("li", { class: "vocab-item" },
       h("span", { class: "vocab-word" }, entry.word),
+      entry.learned ? h("span", { class: "vocab-badge", title: "Learned from your corrections" }, "learned") : null,
       entry.heardAs ? h("small", {}, `often heard as "${entry.heardAs}"`) : null,
       h("button", {
         class: "icon-btn",
@@ -722,7 +726,11 @@
     const term = new Terminal(terminalOptions());
     const fit = new FitAddonClass();
     term.loadAddon(fit);
-    term.onData((data) => invoke("write_pty", { id: session.id, data }).catch(() => {}));
+    term.onData((data) => {
+      // Return sends the prompt. Text dictated into it a moment ago is checked for a fix first, while the prompt still shows it.
+      if (data === "\r") noteReturn(session.id);
+      invoke("write_pty", { id: session.id, data }).catch(() => {});
+    });
     term.attachCustomKeyEventHandler((e) => handleTermKey(session.id, e));
     if (session.kind !== "browser") registerImageLinks(term, session);
 
@@ -3495,7 +3503,7 @@
     dictation.pendingPaste = spoken;
     armWatchdog();
     const text = settings.afterTyping === "space" ? `${spoken} ` : spoken;
-    invoke("dictation_paste", { text, pressReturn: settings.afterTyping === "return" }).catch((err) => {
+    invoke("dictation_paste", { text, pressReturn: settings.afterTyping === "return", learn: settings.learnCorrections }).catch((err) => {
       onPasteResult({ ok: false, error: String(err) });
     });
   }
@@ -3533,6 +3541,58 @@
     attempt("dictation_open_privacy", { pane });
   }
 
+  // ------------------------------------------------------- learning corrections
+
+  // Dictated text that went into a Nesa card, kept for a few minutes, so the prompt can be checked for a fix
+  // when the user sends it. One entry per card.
+  const LEARN_WINDOW_MS = 5 * 60 * 1000;
+  const SCREEN_ROWS = 60;
+  const recentDictation = new Map();
+
+  // The rows around the prompt as they read now. A wrapped row joins the row above it, not a new line.
+  function readScreen(term) {
+    const buffer = term.buffer.active;
+    const cursor = buffer.baseY + buffer.cursorY;
+    let text = "";
+    for (let row = Math.max(0, cursor - SCREEN_ROWS); row <= Math.min(buffer.length - 1, cursor + 2); row++) {
+      const line = buffer.getLine(row);
+      if (line) text += (line.isWrapped ? "" : "\n") + line.translateToString(true);
+    }
+    return text;
+  }
+
+  // Return was pressed in a card. If it sent text dictated a little while ago, the prompt shows any fix.
+  function noteReturn(cardId) {
+    const dictated = recentDictation.get(cardId);
+    recentDictation.delete(cardId);
+    const card = cards.get(cardId);
+    if (!dictated || !card || !settings.learnCorrections || Date.now() - dictated.at > LEARN_WINDOW_MS) return;
+    invoke("learn_from_screen", { inserted: dictated.text, screen: readScreen(card.term) })
+      .then(applyLearned)
+      .catch(() => {});
+  }
+
+  // Fixes join the vocabulary, where the user can see and remove them.
+  function applyLearned(corrections) {
+    if (!settings.learnCorrections || !Array.isArray(corrections) || !corrections.length) return;
+    const { vocabulary, added } = NesaLearning.mergeLearned(settings.vocabulary, corrections, VOCABULARY_MAX);
+    if (!added.length) return;
+    setSetting("vocabulary", vocabulary);
+    announceLearned(added.map((entry) => (entry.heardAs ? `${entry.heardAs} → ${entry.word}` : entry.word)).join(", "));
+  }
+
+  // Says what was learned: Nesa's own toast, or the pill when the words went to another app and it is idle.
+  function announceLearned(names) {
+    if (!document.hasFocus() && dictation.state === "idle" && !dictation.shown) {
+      dictation.elsewhere = true;
+      dictation.shown = true;
+      setHud("done", { label: "Learned", words: names, kind: "message", meta: "", warn: false });
+      hideHud(2400);
+      return;
+    }
+    toast(`Learned ${names}`, "ok");
+  }
+
   // Dictation only types into a card the user can see, so Home and Settings never receive text. A card
   // only counts while Nesa is in front, so words meant for another app never land in a Nesa session.
   function focusedLiveCard() {
@@ -3552,7 +3612,9 @@
     const card = focusedLiveCard();
     if (card) {
       // paste() honours bracketed paste, so newlines do not submit the prompt early.
-      card.term.paste(settings.afterTyping === "space" ? `${spoken} ` : spoken);
+      const pasted = settings.afterTyping === "space" ? `${spoken} ` : spoken;
+      card.term.paste(pasted);
+      recentDictation.set(card.id, { text: pasted, at: Date.now() });
       // Return goes to the session after a short pause, so it reads as a keypress and not as more pasted text.
       if (settings.afterTyping === "return") setTimeout(() => invoke("write_pty", { id: card.id, data: "\r" }).catch(() => {}), 50);
       const session = findSession(card.id);
@@ -3600,6 +3662,9 @@
         break;
       case "paste":
         onPasteResult(event);
+        break;
+      case "learned":
+        applyLearned(event.pairs);
         break;
       case "final":
         finishDictation(event.text || "");
@@ -4016,6 +4081,7 @@
     el.typedSoundToggle.addEventListener("click", () => setSetting("typedSound", !settings.typedSound));
     document.querySelectorAll("[data-access]").forEach((button) => button.addEventListener("click", () => openAccess(button.dataset.access)));
     el.builtinToggle.addEventListener("click", () => setSetting("builtinWords", !settings.builtinWords));
+    el.learnToggle.addEventListener("click", () => setSetting("learnCorrections", !settings.learnCorrections));
     el.vocabForm.addEventListener("submit", addVocabulary);
     el.historyToggle.addEventListener("click", () => setSetting("historyOn", !settings.historyOn));
     el.historyClear.addEventListener("click", clearHistory);

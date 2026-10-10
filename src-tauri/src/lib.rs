@@ -2,6 +2,7 @@ mod activity;
 mod agents;
 mod claude_limits;
 mod commands;
+mod corrections;
 mod dictation;
 mod imagegen;
 mod images;
@@ -127,6 +128,7 @@ pub fn run() {
             dictation::dictation_watch,
             dictation::dictation_request_access,
             dictation::dictation_paste,
+            corrections::learn_from_screen,
             dictation::dictation_open_privacy,
             dictation::dictation_hud,
         ])

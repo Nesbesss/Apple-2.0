@@ -1163,6 +1163,8 @@ body:not(.view-group) .sidebar-hide { display: none; }
 }
 .vocab-item:hover { border-color: var(--selected); }
 .vocab-item small { color: var(--muted); font-size: 12px; font-weight: 400; }
+/* A word Nesa learned from a correction. It is listed like any other, with this mark. */
+.vocab-badge { color: var(--accent); font-size: 11px; padding: 0 6px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 14%, transparent); }
 .vocab-item .icon-btn { width: 22px; height: 22px; }
 
 /* History: one row per dictation. The time and destination sit left, the words in the middle, and the

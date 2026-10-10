@@ -257,6 +257,11 @@
                 <small>Terms like Claude, Tauri, Rust and pull request.</small></span>
               <button class="switch" id="builtin-toggle" type="button" role="switch" aria-checked="true" aria-label="Include Nesa's built-in developer words"></button>
             </div>
+            <div class="setting-row">
+              <span class="setting-label">Learn from my corrections
+                <small>When you fix a word dictation got wrong, Nesa adds the fix here. It only reads the text you dictated, and only until you move on.</small></span>
+              <button class="switch" id="learn-toggle" type="button" role="switch" aria-checked="true" aria-label="Learn from my corrections"></button>
+            </div>
             <div class="s-block">
               <form class="vocab-form" id="vocab-form" autocomplete="off">
                 <label class="vocab-field"><span>Word</span>
@@ -498,6 +503,7 @@
 
   <script src="vendor/xterm.js"></script>
   <script src="vendor/addon-fit.js"></script>
+  <script src="learning.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

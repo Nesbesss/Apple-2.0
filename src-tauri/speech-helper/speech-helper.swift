@@ -8,7 +8,7 @@
 //           words are the user's vocabulary for this hold. builtin adds contextualWords when true.
 //           {"cmd":"watch"}            starts the key watch if needed and reports the state
 //           {"cmd":"target"}           remembers the app the user is in, for a paste
-//           {"cmd":"paste","text":"...","return":false}
+//           {"cmd":"paste","text":"...","return":false,"learn":false}
 //           {"cmd":"request_access"}   asks for Input Monitoring and Accessibility
 //   stdout  {"event":"ready"}
 //           {"event":"state","state":"downloading"}
@@ -22,6 +22,7 @@
 //           {"event":"flags","alt":true,"ctrl":false,"meta":false,"shift":false}
 //           {"event":"input"}                  a key or a click came in (never which key)
 //           {"event":"target","app":"Notes"}   the app the words will go to, when a hold begins
+//           {"event":"edit","inserted":"...","edited":"..."}   a fix in the field the words went into
 //           {"event":"access","input":true,"accessibility":true}
 //           {"event":"paste","ok":true,"app":"Notes"} or {"event":"paste","ok":false,"reason":"..."}
 
@@ -431,7 +432,7 @@ enum Typing {
     }
 
     /// Pastes `text` into the remembered app. Runs off the request loop, so a paste never holds up a hold.
-    static func paste(_ text: String, pressReturn: Bool) {
+    static func paste(_ text: String, pressReturn: Bool, learn: Bool) {
         queue.async {
             lock.lock()
             let app = target
@@ -453,6 +454,8 @@ enum Typing {
                 report(false, "moved")
                 return
             }
+            // The field is read before the paste, so the text the paste adds can be found afterwards.
+            let field = learn ? Corrections.snapshot(pid: app.processIdentifier) : nil
             let board = NSPasteboard.general
             let saved = copy(board.pasteboardItems ?? [])
             board.clearContents()
@@ -461,6 +464,7 @@ enum Typing {
             let written = board.changeCount
             keystroke(9, flags: .maskCommand) // V
             report(true, app.localizedName ?? "")
+            if let field { Corrections.watch(field, inserted: text) }
             if pressReturn {
                 DispatchQueue.global().asyncAfter(deadline: .now() + 0.15) { keystroke(36, flags: []) }
             }
@@ -504,6 +508,211 @@ enum Typing {
     }
 }
 
+// MARK: - Learning from corrections
+//
+// After a paste, the text field the words went into is read back. A fix the user makes is reported as the
+// words between the saved context either side of the dictation, before and after. Only that stretch is
+// read, only while the same field has focus, for at most two minutes. Secure fields are never read.
+
+/// The text fields of other apps, read through Accessibility, for learning from corrections.
+enum Corrections {
+    static let queue = DispatchQueue(label: "nesa.corrections")
+    /// Words of context kept on each side of the dictated text, in UTF-16 units.
+    static let contextUnits = 24
+    static let trackSeconds: Double = 120
+    /// How long the text must stay the same before an edit counts as finished.
+    static let settleSeconds: Double = 2.5
+    /// A longer stretch is not a correction, so it is not read.
+    static let maxRegionUnits = 20_000
+
+    /// A text field before a paste: the element, its text and where the caret was, in UTF-16 units.
+    struct Field {
+        let element: AXUIElement
+        let pid: pid_t
+        let text: String
+        let caret: Int
+        let selected: Int
+    }
+
+    /// One dictated text being watched. Its state is changed only on `queue`.
+    final class Tracker {
+        let element: AXUIElement
+        let pid: pid_t
+        let left: String
+        let right: String
+        var baseline: String
+        var latest: String
+        var changedAt: Date
+        let started = Date()
+        var misses = 0
+        var timer: DispatchSourceTimer?
+
+        init(element: AXUIElement, pid: pid_t, left: String, right: String, inserted: String) {
+            self.element = element
+            self.pid = pid
+            self.left = left
+            self.right = right
+            baseline = inserted
+            latest = inserted
+            changedAt = started
+        }
+    }
+
+    private static var active: Tracker?
+
+    static func attribute(_ element: AXUIElement, _ name: String) -> AnyObject? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return nil }
+        return value as AnyObject?
+    }
+
+    /// The focused text field of an app, if it has one that Accessibility can reach.
+    static func focusedField(pid: pid_t) -> AXUIElement? {
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.25)
+        // Chromium and Electron build their accessibility tree only when asked. Other apps ignore this.
+        _ = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        guard let focused = attribute(app, kAXFocusedUIElementAttribute as String) else { return nil }
+        let element = focused as! AXUIElement
+        AXUIElementSetMessagingTimeout(element, 0.25)
+        return element
+    }
+
+    static func isSecure(_ element: AXUIElement) -> Bool {
+        let role = attribute(element, kAXRoleAttribute as String) as? String
+        let subrole = attribute(element, kAXSubroleAttribute as String) as? String
+        return role == "AXSecureTextField" || subrole == "AXSecureTextField"
+    }
+
+    /// The text of a field and its selection, in UTF-16 units.
+    static func textState(_ element: AXUIElement) -> (String, CFRange)? {
+        guard let value = attribute(element, kAXValueAttribute as String) as? String,
+              let rangeValue = attribute(element, kAXSelectedTextRangeAttribute as String),
+              CFGetTypeID(rangeValue) == AXValueGetTypeID() else { return nil }
+        var range = CFRange()
+        guard AXValueGetValue(rangeValue as! AXValue, .cfRange, &range) else { return nil }
+        return (value, range)
+    }
+
+    /// The field a paste is about to go into, or nil when it is secure or cannot be read.
+    static func snapshot(pid: pid_t) -> Field? {
+        guard let element = focusedField(pid: pid), !isSecure(element) else { return nil }
+        guard let (text, range) = textState(element) else { return nil }
+        return Field(element: element, pid: pid, text: text, caret: range.location, selected: range.length)
+    }
+
+    /// The text between two UTF-16 offsets, moved inward so that no surrogate pair is cut in half.
+    static func slice(_ text: NSString, _ from: Int, _ to: Int) -> String {
+        var start = max(0, from)
+        var end = min(text.length, to)
+        if start < end, (0xDC00...0xDFFF).contains(text.character(at: start)) { start += 1 }
+        if start < end, (0xD800...0xDBFF).contains(text.character(at: end - 1)) { end -= 1 }
+        guard end > start else { return "" }
+        return text.substring(with: NSRange(location: start, length: end - start))
+    }
+
+    /// Starts tracking once the paste has landed. Some apps update their field late, so the check is retried.
+    static func watch(_ field: Field, inserted: String) {
+        let text = field.text as NSString
+        let left = slice(text, field.caret - contextUnits, field.caret)
+        let rightStart = field.caret + field.selected
+        let right = slice(text, rightStart, rightStart + contextUnits)
+        DispatchQueue.global().async {
+            for _ in 0..<6 {
+                Thread.sleep(forTimeInterval: 0.3)
+                guard let state = textState(field.element) else { continue }
+                let after = state.0 as NSString
+                let count = (inserted as NSString).length
+                guard field.caret + count <= after.length,
+                      after.substring(with: NSRange(location: field.caret, length: count)) == inserted else { continue }
+                let tracker = Tracker(element: field.element, pid: field.pid, left: left, right: right, inserted: inserted)
+                queue.async { start(tracker) }
+                return
+            }
+        }
+    }
+
+    /// The text that sits between the saved context, or nil when the context is no longer there.
+    static func region(of value: String, left: String, right: String) -> String? {
+        let text = value as NSString
+        let length = text.length
+        var starts: [Int] = []
+        if left.isEmpty {
+            starts = [0]
+        } else {
+            var from = 0
+            while from < length {
+                let found = text.range(of: left, options: .literal, range: NSRange(location: from, length: length - from))
+                if found.location == NSNotFound { break }
+                starts.append(found.location + found.length)
+                from = found.location + 1
+            }
+        }
+        for start in starts {
+            var stop = length
+            if !right.isEmpty {
+                let found = text.range(of: right, options: .literal, range: NSRange(location: start, length: length - start))
+                if found.location == NSNotFound { continue }
+                stop = found.location
+            }
+            guard stop >= start, stop - start <= maxRegionUnits else { continue }
+            return text.substring(with: NSRange(location: start, length: stop - start))
+        }
+        return nil
+    }
+
+    private static func start(_ tracker: Tracker) {
+        if let previous = active { finish(previous) }
+        active = tracker
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + 1, repeating: 1)
+        timer.setEventHandler { tick(tracker) }
+        tracker.timer = timer
+        timer.resume()
+    }
+
+    /// Reports an edit that is still pending, then stops watching the field.
+    private static func finish(_ tracker: Tracker) {
+        if tracker.latest != tracker.baseline {
+            Out.send(["event": "edit", "inserted": tracker.baseline, "edited": tracker.latest])
+        }
+        tracker.timer?.cancel()
+        tracker.timer = nil
+        if active === tracker { active = nil }
+    }
+
+    private static func tick(_ tracker: Tracker) {
+        // A secure field, or secure input, is never read, and watching stops there.
+        if isSecure(tracker.element) || IsSecureEventInputEnabled() {
+            finish(tracker)
+            return
+        }
+        let now = Date()
+        let stillFocused = focusedField(pid: tracker.pid).map { CFEqual($0, tracker.element) } ?? false
+        let current: String? = textState(tracker.element).flatMap { state in
+            Corrections.region(of: state.0, left: tracker.left, right: tracker.right)
+        }
+        if let current {
+            tracker.misses = 0
+            if current != tracker.latest {
+                tracker.latest = current
+                tracker.changedAt = now
+            }
+        } else {
+            tracker.misses += 1
+        }
+        // An edit counts once the text has been still for a moment, or as soon as the user leaves the field.
+        let settled = now.timeIntervalSince(tracker.changedAt) >= settleSeconds
+        if (settled || !stillFocused) && tracker.latest != tracker.baseline {
+            Out.send(["event": "edit", "inserted": tracker.baseline, "edited": tracker.latest])
+            tracker.baseline = tracker.latest
+        }
+        if !stillFocused || tracker.misses >= 3 || now.timeIntervalSince(tracker.started) > trackSeconds {
+            finish(tracker)
+        }
+    }
+}
+
 /// One line from the app: a command, and for `start`, the vocabulary to expect during that hold.
 struct Request {
     let cmd: String
@@ -530,7 +739,8 @@ Thread.detachNewThread {
         case "target":
             Typing.rememberTarget()
         case "paste":
-            Typing.paste(object["text"] as? String ?? "", pressReturn: object["return"] as? Bool ?? false)
+            Typing.paste(object["text"] as? String ?? "", pressReturn: object["return"] as? Bool ?? false,
+                learn: object["learn"] as? Bool ?? false)
         default:
             let words = object["words"] as? [String] ?? []
             let builtin = object["builtin"] as? Bool ?? true

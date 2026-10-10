@@ -19,7 +19,7 @@ use std::{
 };
 use tauri::{AppHandle, Emitter, LogicalPosition, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
-use crate::AppState;
+use crate::{corrections, AppState};
 
 type CmdResult<T> = Result<T, String>;
 
@@ -202,6 +202,15 @@ fn spawn(app: &AppHandle) -> CmdResult<Helper> {
                     let step = app.state::<AppState>().dictation.chord.lock().unwrap().input();
                     on_step(&app, step);
                 }
+                // The helper saw a correction in another app's text field. Only the fixes go on, never the text.
+                Some("edit") => {
+                    let inserted = event.get("inserted").and_then(Value::as_str).unwrap_or_default();
+                    let edited = event.get("edited").and_then(Value::as_str).unwrap_or_default();
+                    let pairs = corrections::learn(inserted, edited);
+                    if !pairs.is_empty() {
+                        let _ = app.emit("dictation", json!({ "event": "learned", "pairs": pairs }));
+                    }
+                }
                 _ => {
                     let _ = app.emit("dictation", event);
                 }
@@ -326,8 +335,8 @@ pub fn dictation_request_access(app: AppHandle, state: State<'_, AppState>) -> C
 
 /// Types the words into the app that was frontmost when the hold started, by pasting them.
 #[tauri::command]
-pub fn dictation_paste(app: AppHandle, state: State<'_, AppState>, text: String, press_return: bool) -> CmdResult<()> {
-    send(&app, state.inner(), json!({ "cmd": "paste", "text": text, "return": press_return }))
+pub fn dictation_paste(app: AppHandle, state: State<'_, AppState>, text: String, press_return: bool, learn: bool) -> CmdResult<()> {
+    send(&app, state.inner(), json!({ "cmd": "paste", "text": text, "return": press_return, "learn": learn }))
 }
 
 /// The System Settings pane for one of the two permissions.
