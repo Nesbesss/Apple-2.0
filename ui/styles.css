@@ -1695,6 +1695,25 @@ body:not(.view-group) .dictation:not(.is-visible) { display: none; }
 .surface-name { color: var(--text); font-size: 12.5px; font-weight: 500; text-align: left; padding: 0 2px; }
 .surface-card[aria-checked="true"] .surface-name { color: var(--text); }
 
+/* Speech-to-text: the after-typing cards, the vocabulary list, and the history of what was said. */
+#after-typing-choices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.vocab-form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 10px; align-items: end; margin-top: 16px; }
+.vocab-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; color: var(--muted); font-size: 12px; }
+.vocab-field small { color: var(--dim); font-size: 11px; }
+.vocab-field > .input { flex: none; }
+.vocab-form .btn { height: 32px; }
+.vocab-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; padding: 0; list-style: none; }
+.vocab-item { display: inline-flex; align-items: center; gap: 8px; min-height: 30px; padding: 0 4px 0 12px; border: 1px solid var(--line); border-radius: 999px; color: var(--text); }
+.vocab-item small { color: var(--muted); font-size: 12px; }
+.vocab-item .icon-btn { width: 22px; height: 22px; }
+.history-list { margin-top: 14px; padding: 0; list-style: none; }
+.history-item { display: flex; flex-direction: column; gap: 6px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.history-meta { display: flex; gap: 10px; color: var(--muted); font-size: 12px; }
+.history-text { color: var(--text); line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
+.history-actions { display: flex; align-items: center; gap: 14px; }
+.history-actions .btn { height: 26px; padding: 0 10px; font-size: 12px; }
+.history-empty { padding: 14px 0; }
+
 /* Scrollbars */
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }

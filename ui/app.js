@@ -121,6 +121,19 @@
     statusColors: $("#status-colors"),
     alertsToggle: $("#alerts-toggle"),
     pingChoices: $("#ping-choices"),
+    afterTypingChoices: $("#after-typing-choices"),
+    typedSoundToggle: $("#typed-sound-toggle"),
+    builtinToggle: $("#builtin-toggle"),
+    vocabForm: $("#vocab-form"),
+    vocabWord: $("#vocab-word"),
+    vocabHeard: $("#vocab-heard"),
+    vocabError: $("#vocab-error"),
+    vocabCount: $("#vocab-count"),
+    vocabList: $("#vocab-list"),
+    historyToggle: $("#history-toggle"),
+    historyKeepChoices: $("#history-keep-choices"),
+    historyClear: $("#history-clear"),
+    historyList: $("#history-list"),
   };
 
   const groups = () => state.store.groups;
@@ -146,7 +159,11 @@
   const SETTINGS_KEY = "settings";
   const HEX = /^#[0-9a-f]{6}$/i;
   // claudeLimit is tokens per five hours, 0 when not set. claudeLimitAt is when it was set (Unix ms).
-  const DEFAULT_SETTINGS = { accent: "#7c9cff", surface: "default", done: "#4ac26b", fail: "#f06b6b", claude: "#d97757", hotkey: "alt", donePing: "Chime", claudeLimit: 0, claudeLimitAt: 0 };
+  // vocabulary is a list of { word, heardAs }. historyKeep is how many dictated entries to keep.
+  const DEFAULT_SETTINGS = {
+    accent: "#7c9cff", surface: "default", done: "#4ac26b", fail: "#f06b6b", claude: "#d97757", hotkey: "alt", donePing: "Chime", claudeLimit: 0, claudeLimitAt: 0,
+    vocabulary: [], builtinWords: true, afterTyping: "none", typedSound: true, historyOn: true, historyKeep: 200,
+  };
   const SURFACES = {
     default: { label: "Default", canvas: "#121213", sidebar: "#171718", card: "#1c1c1e" },
     midnight: { label: "Midnight", canvas: "#0b0e18", sidebar: "#10141f", card: "#151a29" },
@@ -176,6 +193,16 @@
   // Sounds a finished agent can play. They are made by scripts/make-done-pings.mjs. The first one is the
   // default. The backend keeps the same list and refuses any other name.
   const DONE_PINGS = ["Chime", "Marimba", "Harp", "Droplet", "Glow", "Lift", "Knock", "Twinkle", "Pluck", "Echo", "Ripple"];
+  // What happens after the words are typed. "return" presses Enter so the agent runs the prompt.
+  const AFTER_TYPING = {
+    none: { label: "Nothing", hint: "Leave the cursor after the words." },
+    space: { label: "A space", hint: "Ready for the next thing you say." },
+    return: { label: "Return", hint: "Press Enter, so the agent runs what you said." },
+  };
+  const HISTORY_KEEP = [50, 200, 1000];
+  // The engine gets at most VOCABULARY_MAX words; the backend trims to the same limit.
+  const VOCABULARY_MAX = 100;
+  const VOCABULARY_WORD_MAX = 80;
 
   let settings = { ...DEFAULT_SETTINGS };
 
@@ -184,6 +211,9 @@
     try { saved = JSON.parse(stored.get(SETTINGS_KEY)) || {}; } catch { saved = {}; }
     const pick = (key, valid) => (valid(saved[key]) ? saved[key] : DEFAULT_SETTINGS[key]);
     const isColor = (value) => typeof value === "string" && HEX.test(value);
+    const isBoolean = (value) => typeof value === "boolean";
+    const isVocabulary = (list) => Array.isArray(list) && list.length <= VOCABULARY_MAX
+      && list.every((entry) => entry && typeof entry.word === "string" && typeof entry.heardAs === "string");
     settings = {
       accent: pick("accent", isColor),
       surface: pick("surface", (value) => Object.keys(SURFACES).includes(value)),
@@ -194,11 +224,159 @@
       donePing: pick("donePing", (value) => DONE_PINGS.includes(value)),
       claudeLimit: pick("claudeLimit", (value) => Number.isFinite(value) && value >= 0),
       claudeLimitAt: pick("claudeLimitAt", (value) => Number.isFinite(value) && value >= 0),
+      vocabulary: pick("vocabulary", isVocabulary),
+      builtinWords: pick("builtinWords", isBoolean),
+      afterTyping: pick("afterTyping", (value) => Object.keys(AFTER_TYPING).includes(value)),
+      typedSound: pick("typedSound", isBoolean),
+      historyOn: pick("historyOn", isBoolean),
+      historyKeep: pick("historyKeep", (value) => HISTORY_KEEP.includes(value)),
     };
   }
 
   function saveSettings() {
     stored.set(SETTINGS_KEY, JSON.stringify(settings));
+  }
+
+  // ------------------------------------------------------------- vocabulary
+
+  // Each entry is a word the engine should expect. "Often heard as" is optional: when the engine writes
+  // that spelling instead, Nesa swaps in the word once the hold ends. Only the words go to the engine.
+  const vocabularyWords = () => settings.vocabulary.map((entry) => entry.word);
+  const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  // Whole words only, ignoring case, so "cooper" does not change "cooperate". Entries apply in list order.
+  function applyVocabulary(text) {
+    return settings.vocabulary.reduce((out, { word, heardAs }) => (heardAs
+      ? out.replace(new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegExp(heardAs)}(?=$|[^\\p{L}\\p{N}])`, "giu"), (_, before) => before + word)
+      : out), text);
+  }
+
+  function addVocabulary(event) {
+    event.preventDefault();
+    const word = el.vocabWord.value.trim();
+    const heardAs = el.vocabHeard.value.trim();
+    const taken = settings.vocabulary.some((entry) => entry.word.toLowerCase() === word.toLowerCase());
+    const problem = !word ? "Type the word first."
+      : word.length > VOCABULARY_WORD_MAX || heardAs.length > VOCABULARY_WORD_MAX ? `Keep each entry under ${VOCABULARY_WORD_MAX} characters.`
+      : taken ? `"${word}" is already in your vocabulary.`
+      : settings.vocabulary.length >= VOCABULARY_MAX ? `The list is full at ${VOCABULARY_MAX} words. Remove one to add another.`
+      : "";
+    el.vocabError.textContent = problem;
+    el.vocabError.hidden = !problem;
+    if (problem) return;
+    // An "often heard as" that only differs by case is not a replacement, so it is dropped.
+    const sameWord = heardAs.toLowerCase() === word.toLowerCase();
+    setSetting("vocabulary", [...settings.vocabulary, { word, heardAs: sameWord ? "" : heardAs }]);
+    el.vocabWord.value = "";
+    el.vocabHeard.value = "";
+    el.vocabWord.focus();
+  }
+
+  const removeVocabulary = (index) => setSetting("vocabulary", settings.vocabulary.filter((_, i) => i !== index));
+
+  function renderVocabulary() {
+    const list = settings.vocabulary;
+    el.builtinToggle.setAttribute("aria-checked", String(settings.builtinWords));
+    el.vocabCount.textContent = list.length ? `${list.length} of ${VOCABULARY_MAX} words.` : "No words yet.";
+    el.vocabList.replaceChildren(...list.map((entry, index) => h("li", { class: "vocab-item" },
+      h("span", { class: "vocab-word" }, entry.word),
+      entry.heardAs ? h("small", {}, `often heard as "${entry.heardAs}"`) : null,
+      h("button", {
+        class: "icon-btn",
+        type: "button",
+        title: `Remove ${entry.word}`,
+        "aria-label": `Remove ${entry.word}`,
+        onclick: () => removeVocabulary(index),
+        html: ICONS.close,
+      }))));
+  }
+
+  // ---------------------------------------------------------------- history
+
+  // Every dictation that produced words, newest first. It is kept on this Mac, in this app's local storage.
+  const HISTORY_KEY = "dictationHistory";
+  let dictationHistory = loadHistory();
+
+  function loadHistory() {
+    let saved = [];
+    try { saved = JSON.parse(stored.get(HISTORY_KEY)) || []; } catch { saved = []; }
+    if (!Array.isArray(saved)) return [];
+    return saved.filter((item) => item && typeof item.text === "string" && Number.isFinite(item.at) && typeof item.into === "string");
+  }
+
+  function saveHistory() {
+    stored.set(HISTORY_KEY, JSON.stringify(dictationHistory));
+  }
+
+  // `into` is the session the words were typed into, or "" when they were not typed.
+  function recordHistory(text, into) {
+    if (!settings.historyOn) return;
+    dictationHistory = [{ text, at: Date.now(), into }, ...dictationHistory].slice(0, settings.historyKeep);
+    saveHistory();
+    if (state.view === "settings") renderHistory();
+  }
+
+  function setHistoryKeep(count) {
+    dictationHistory = dictationHistory.slice(0, count);
+    saveHistory();
+    setSetting("historyKeep", count);
+  }
+
+  const deleteHistory = (index) => {
+    dictationHistory = dictationHistory.filter((_, i) => i !== index);
+    saveHistory();
+    renderHistory();
+  };
+
+  async function clearHistory() {
+    const count = dictationHistory.length;
+    if (!count) return;
+    const ok = await confirmDialog({
+      title: "Clear the history?",
+      text: `This removes the ${count === 1 ? "one saved entry" : `${count} saved entries`} from this Mac.`,
+      label: "Clear",
+    });
+    if (!ok) return;
+    dictationHistory = [];
+    saveHistory();
+    renderHistory();
+  }
+
+  // Copies through the backend, which runs pbcopy. The webview's clipboard can refuse a write that is not
+  // from a direct click, so this is the reliable path.
+  function copyHistory(item, button) {
+    attempt("copy_text", { text: item.text }).then((result) => {
+      if (!result.ok) return;
+      button.textContent = "Copied";
+      setTimeout(() => { button.textContent = "Copy"; }, 1400);
+    });
+  }
+
+  function renderHistory() {
+    el.historyToggle.setAttribute("aria-checked", String(settings.historyOn));
+    el.historyClear.disabled = !dictationHistory.length;
+    el.historyKeepChoices.replaceChildren(...HISTORY_KEEP.map((count) => choice(
+      count === settings.historyKeep,
+      () => setHistoryKeep(count),
+      count.toLocaleString("en-US"),
+    )));
+    if (!dictationHistory.length) {
+      el.historyList.replaceChildren(h("li", { class: "setting-hint history-empty" }, settings.historyOn
+        ? "Nothing yet. What you say in voice mode shows up here."
+        : "History is off, so new words are not saved."));
+      return;
+    }
+    el.historyList.replaceChildren(...dictationHistory.map((item, index) => {
+      const when = new Date(item.at);
+      return h("li", { class: "history-item" },
+        h("div", { class: "history-meta" },
+          h("time", { datetime: when.toISOString() }, when.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })),
+          h("span", {}, item.into ? `Typed into ${item.into}` : "Not typed")),
+        h("p", { class: "history-text" }, item.text),
+        h("div", { class: "history-actions" },
+          h("button", { class: "btn btn-outline", type: "button", onclick: (e) => copyHistory(item, e.currentTarget) }, "Copy"),
+          h("button", { class: "link", type: "button", onclick: () => deleteHistory(index) }, "Delete")));
+    }));
   }
 
   const hexToRgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
@@ -2041,6 +2219,16 @@
     el.pingChoices.replaceChildren(...DONE_PINGS.map((name) => h("span", { class: "ping-option" },
       choice(name === settings.donePing, () => chooseDonePing(name), name),
       h("button", { class: "ping-preview", type: "button", title: `Preview ${name}`, "aria-label": `Preview ${name}`, onclick: () => previewDonePing(name) }))));
+    el.afterTypingChoices.replaceChildren(...Object.keys(AFTER_TYPING).map((key) => {
+      const option = AFTER_TYPING[key];
+      const card = choice(key === settings.afterTyping, () => setSetting("afterTyping", key),
+        h("span", { class: "choice-text" }, h("strong", {}, option.label), h("small", {}, option.hint)));
+      card.classList.add("choice-card");
+      return card;
+    }));
+    el.typedSoundToggle.setAttribute("aria-checked", String(settings.typedSound));
+    renderVocabulary();
+    renderHistory();
     renderClaudeLimit();
     renderClaudeStatus();
     renderSettingsTabs();
@@ -2048,7 +2236,7 @@
 
   // Settings is split into sections. Only the chosen one is shown. The choice lives in state, so a
   // setting that re-renders the page keeps the section open.
-  const SETTINGS_TABS = ["voice", "appearance", "alerts", "usage"];
+  const SETTINGS_TABS = ["voice", "vocabulary", "history", "appearance", "alerts", "usage"];
 
   function setSettingsTab(tab) {
     if (!SETTINGS_TABS.includes(tab)) return;
@@ -2850,7 +3038,7 @@
     });
     playSound("start");
     if (!dictation.frame) animateHud();
-    attempt("dictation_start").then((result) => {
+    attempt("dictation_start", { words: vocabularyWords(), builtin: settings.builtinWords }).then((result) => {
       if (!result.ok) cancelDictation();
     });
   }
@@ -2894,7 +3082,7 @@
 
   function finishDictation(text) {
     clearWatchdog();
-    const spoken = text.trim();
+    const spoken = applyVocabulary(text.trim());
     if (!spoken) {
       setHud("error", { label: "Nothing heard", words: `Hold ${hotkey().symbol} and speak a little longer`, kind: "message", meta: "", warn: true });
       hideHud(1800);
@@ -2903,13 +3091,17 @@
     const card = focusedLiveCard();
     if (card) {
       // paste() honours bracketed paste, so newlines do not submit the prompt early.
-      card.term.paste(spoken);
+      card.term.paste(settings.afterTyping === "space" ? `${spoken} ` : spoken);
+      // Return is written straight to the session, after the paste, so the agent runs the words as a prompt.
+      if (settings.afterTyping === "return") invoke("write_pty", { id: card.id, data: "\r" }).catch(() => {});
       const session = findSession(card.id);
+      recordHistory(spoken, session ? session.name : "");
       setHud("done", { label: `Typed into ${session ? session.name : "the session"}`, words: tail(spoken), kind: "tail", meta: "", warn: false });
-      playSound("done");
+      if (settings.typedSound) playSound("done");
       hideHud(1600);
     } else {
-      // Nothing to type into: keep the words on screen so they are not lost.
+      // Nothing to type into: keep the words on screen so they are not lost, and in the history.
+      recordHistory(spoken, "");
       setHud("error", { label: "Not typed", words: tail(spoken), kind: "tail", meta: "click a running session first", warn: true });
       hideHud(4500);
     }
@@ -3051,6 +3243,11 @@
     [el.sessionDialog, el.confirmDialog, el.promptDialog].forEach((dialog) => dialog.addEventListener("close", syncBrowsers));
     $("#browse").addEventListener("click", browseFolder);
     el.alertsToggle.addEventListener("click", toggleAlerts);
+    el.typedSoundToggle.addEventListener("click", () => setSetting("typedSound", !settings.typedSound));
+    el.builtinToggle.addEventListener("click", () => setSetting("builtinWords", !settings.builtinWords));
+    el.vocabForm.addEventListener("submit", addVocabulary);
+    el.historyToggle.addEventListener("click", () => setSetting("historyOn", !settings.historyOn));
+    el.historyClear.addEventListener("click", clearHistory);
     bindHomeAndSettings();
     $("#session-cancel").addEventListener("click", () => el.sessionDialog.close());
     $("#new-session-form").addEventListener("submit", submitSession);

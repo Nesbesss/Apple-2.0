@@ -183,6 +183,8 @@
 
         <nav class="settings-tabs" id="settings-tabs" role="tablist" aria-label="Settings sections">
           <button class="settings-tab" type="button" role="tab" data-tab="voice" aria-controls="panel-voice">Voice</button>
+          <button class="settings-tab" type="button" role="tab" data-tab="vocabulary" aria-controls="panel-vocabulary">Vocabulary</button>
+          <button class="settings-tab" type="button" role="tab" data-tab="history" aria-controls="panel-history">History</button>
           <button class="settings-tab" type="button" role="tab" data-tab="appearance" aria-controls="panel-appearance">Appearance</button>
           <button class="settings-tab" type="button" role="tab" data-tab="alerts" aria-controls="panel-alerts">Alerts</button>
           <button class="settings-tab" type="button" role="tab" data-tab="usage" aria-controls="usage-settings">Usage</button>
@@ -192,6 +194,55 @@
           <h2 class="block-title">Voice mode</h2>
           <p class="setting-hint">Hold these keys to talk. Release them to type the words into the focused session.</p>
           <div class="choice-list" id="hotkey-choices" role="radiogroup" aria-label="Voice mode keys"></div>
+          <div class="setting-stack">
+            <span class="setting-label">After the words are typed
+              <small>What Nesa does once your words are in the focused session.</small></span>
+            <div class="choice-list" id="after-typing-choices" role="radiogroup" aria-label="After the words are typed"></div>
+          </div>
+          <div class="setting-row">
+            <span class="setting-label">Play a sound when the words are typed
+              <small>A short sound once the session has them.</small></span>
+            <button class="switch" id="typed-sound-toggle" type="button" role="switch" aria-checked="true" aria-label="Play a sound when the words are typed"></button>
+          </div>
+        </section>
+
+        <section class="page-block" role="tabpanel" id="panel-vocabulary" data-tab="vocabulary">
+          <h2 class="block-title">Vocabulary</h2>
+          <p class="setting-hint">Names, projects and terms the speech engine should expect. If it keeps writing a word wrong, add the wrong spelling under "Often heard as" and Nesa fixes it when you finish speaking.</p>
+          <div class="setting-row">
+            <span class="setting-label">Include Nesa's built-in developer words
+              <small>Terms like Claude, Tauri, Rust and pull request.</small></span>
+            <button class="switch" id="builtin-toggle" type="button" role="switch" aria-checked="true" aria-label="Include Nesa's built-in developer words"></button>
+          </div>
+          <form class="vocab-form" id="vocab-form" autocomplete="off">
+            <label class="vocab-field"><span>Word</span>
+              <input class="input" id="vocab-word" type="text" maxlength="80" placeholder="Kubernetes" spellcheck="false"></label>
+            <label class="vocab-field"><span>Often heard as <small>optional</small></span>
+              <input class="input" id="vocab-heard" type="text" maxlength="80" placeholder="cooper netties" spellcheck="false"></label>
+            <button class="btn btn-primary" id="vocab-add" type="submit">Add</button>
+          </form>
+          <p class="form-error" id="vocab-error" role="alert" hidden></p>
+          <p class="setting-hint" id="vocab-count"></p>
+          <ul class="vocab-list" id="vocab-list"></ul>
+        </section>
+
+        <section class="page-block" role="tabpanel" id="panel-history" data-tab="history">
+          <div class="block-head">
+            <h2 class="block-title">History</h2>
+            <button class="btn btn-outline" id="history-clear" type="button">Clear</button>
+          </div>
+          <p class="setting-hint">Everything you have dictated, newest first. Copy any of it to use somewhere else.</p>
+          <div class="setting-row">
+            <span class="setting-label">Keep a history of what you say
+              <small>When this is off, new words are not saved. Saved ones stay until you clear them.</small></span>
+            <button class="switch" id="history-toggle" type="button" role="switch" aria-checked="true" aria-label="Keep a history of what you say"></button>
+          </div>
+          <div class="setting-stack">
+            <span class="setting-label">Keep the newest
+              <small>Older entries are dropped as new ones arrive.</small></span>
+            <div class="choice-list" id="history-keep-choices" role="radiogroup" aria-label="How many entries to keep"></div>
+          </div>
+          <ol class="history-list" id="history-list"></ol>
         </section>
 
         <section class="page-block" role="tabpanel" id="panel-appearance" data-tab="appearance">

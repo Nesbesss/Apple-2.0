@@ -1,9 +1,10 @@
-//! Dictation: a Swift sidecar (`speech-helper`) listens while the user holds Option+Command.
+//! Dictation: a Swift sidecar (`speech-helper`) listens while the user holds the voice-mode keys.
 //! The helper runs as its own process, so a speech failure can never take down a terminal
 //! session. Its JSON lines are forwarded to the UI as `dictation` events.
 
 use serde_json::{json, Value};
 use std::{
+    collections::HashSet,
     io::{BufRead, BufReader, Write},
     path::PathBuf,
     process::{Child, ChildStdin, Command, Stdio},
@@ -15,6 +16,11 @@ use tauri::{AppHandle, Emitter, State};
 use crate::AppState;
 
 type CmdResult<T> = Result<T, String>;
+
+/// Most vocabulary words the engine is given for one hold. More than this bias it too far.
+const MAX_WORDS: usize = 100;
+/// Longest word or phrase the engine is given.
+const MAX_WORD_CHARS: usize = 80;
 
 struct Helper {
     child: Child,
@@ -78,11 +84,24 @@ pub fn warm(app: &AppHandle, state: &AppState) -> CmdResult<()> {
     ensure_running(&mut state.dictation.helper.lock().unwrap(), app)
 }
 
-fn send(app: &AppHandle, state: &AppState, cmd: &str) -> CmdResult<()> {
+/// Trims the words, drops blanks and overlong ones, and keeps the first of any that repeat ignoring
+/// case. The engine never gets more than `MAX_WORDS`.
+fn clean_words(words: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    words
+        .into_iter()
+        .map(|word| word.trim().to_string())
+        .filter(|word| !word.is_empty() && word.chars().count() <= MAX_WORD_CHARS)
+        .filter(|word| seen.insert(word.to_lowercase()))
+        .take(MAX_WORDS)
+        .collect()
+}
+
+fn send(app: &AppHandle, state: &AppState, request: Value) -> CmdResult<()> {
     let mut slot = state.dictation.helper.lock().unwrap();
     ensure_running(&mut slot, app)?;
     let helper = slot.as_mut().expect("helper was just started");
-    let written = writeln!(helper.stdin, r#"{{"cmd":"{cmd}"}}"#).and_then(|_| helper.stdin.flush());
+    let written = writeln!(helper.stdin, "{request}").and_then(|_| helper.stdin.flush());
     if written.is_err() {
         // The helper is gone. Reap it so the next command starts a fresh one.
         if let Some(mut dead) = slot.take() {
@@ -94,17 +113,52 @@ fn send(app: &AppHandle, state: &AppState, cmd: &str) -> CmdResult<()> {
     Ok(())
 }
 
+/// Starts listening. `words` is the user's vocabulary, and `builtin` says whether Nesa's own developer
+/// words go in too. Both travel with every start, so a helper that was restarted still gets them.
 #[tauri::command]
-pub fn dictation_start(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
-    send(&app, state.inner(), "start")
+pub fn dictation_start(app: AppHandle, state: State<'_, AppState>, words: Vec<String>, builtin: bool) -> CmdResult<()> {
+    send(&app, state.inner(), json!({ "cmd": "start", "words": clean_words(words), "builtin": builtin }))
 }
 
 #[tauri::command]
 pub fn dictation_stop(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
-    send(&app, state.inner(), "stop")
+    send(&app, state.inner(), json!({ "cmd": "stop" }))
 }
 
 #[tauri::command]
 pub fn dictation_cancel(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
-    send(&app, state.inner(), "cancel")
+    send(&app, state.inner(), json!({ "cmd": "cancel" }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn words(list: &[&str]) -> Vec<String> {
+        list.iter().map(|word| word.to_string()).collect()
+    }
+
+    #[test]
+    fn words_are_trimmed_and_blanks_dropped() {
+        assert_eq!(clean_words(words(&["  Nesa ", "", "   ", "Tauri"])), words(&["Nesa", "Tauri"]));
+    }
+
+    #[test]
+    fn repeats_ignoring_case_keep_the_first_spelling() {
+        assert_eq!(clean_words(words(&["Claude", "claude", "CLAUDE", "Codex"])), words(&["Claude", "Codex"]));
+    }
+
+    #[test]
+    fn overlong_words_are_dropped() {
+        let long = "x".repeat(MAX_WORD_CHARS + 1);
+        assert_eq!(clean_words(words(&[long.as_str(), "Nesa"])), words(&["Nesa"]));
+    }
+
+    #[test]
+    fn the_list_is_capped() {
+        let many: Vec<String> = (0..MAX_WORDS + 20).map(|i| format!("word{i}")).collect();
+        let cleaned = clean_words(many);
+        assert_eq!(cleaned.len(), MAX_WORDS);
+        assert_eq!(cleaned[0], "word0");
+    }
 }

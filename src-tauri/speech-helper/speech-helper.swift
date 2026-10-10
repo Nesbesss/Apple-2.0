@@ -4,7 +4,8 @@
 // speech engine (SpeechAnalyzer with DictationTranscriber) and reports results as JSON lines.
 // It runs as a separate process so a speech failure can never take down the terminal sessions.
 //
-//   stdin   {"cmd":"start"} | {"cmd":"stop"} | {"cmd":"cancel"}
+//   stdin   {"cmd":"start","words":["Kubernetes"],"builtin":true} | {"cmd":"stop"} | {"cmd":"cancel"}
+//           words are the user's vocabulary for this hold. builtin adds contextualWords when true.
 //   stdout  {"event":"ready"}
 //           {"event":"state","state":"downloading"}
 //           {"event":"listening"}
@@ -25,6 +26,14 @@ let contextualWords = [
     "commit", "rebase", "Tauri", "Rust", "Cargo", "npm", "Xcode", "xterm", "localhost", "stdout",
     "JSON", "TypeScript", "SwiftUI", "GitHub", "Nesa", "pty", "merge", "diff",
 ]
+
+/// The words the engine should expect for one hold: the built-in developer words when `builtin` is on,
+/// then the user's own. A word that repeats ignoring case is listed once, so "Claude" and "claude" count
+/// as one.
+func contextualHints(_ words: [String], builtin: Bool) -> [String] {
+    var seen = Set<String>()
+    return ((builtin ? contextualWords : []) + words).filter { seen.insert($0.lowercased()).inserted }
+}
 
 enum Out {
     private static let lock = NSLock()
@@ -165,10 +174,10 @@ actor Dictation {
         engine = nil
     }
 
-    func start() async {
+    func start(hints: [String]) async {
         guard session == nil else { return }
         do {
-            session = try await openSession()
+            session = try await openSession(hints: hints)
         } catch {
             Out.send(["event": "error", "message": message(error)])
         }
@@ -207,7 +216,7 @@ actor Dictation {
         Out.send(["event": "cancelled"])
     }
 
-    private func openSession() async throws -> Session {
+    private func openSession(hints: [String]) async throws -> Session {
         if format == nil || engine == nil { await prewarm() }
         guard let format, let engine else { throw DictationError.noAudioFormat }
         guard let locale else { throw DictationError.noAudioFormat }
@@ -248,7 +257,7 @@ actor Dictation {
 
         let analyzer = SpeechAnalyzer(modules: [transcriber])
         let context = AnalysisContext()
-        context.contextualStrings[.general] = contextualWords
+        context.contextualStrings[.general] = hints
         let results = Task<String, Error> {
             var segments: [(start: Double, text: String)] = []
             for try await result in transcriber.results {
@@ -284,7 +293,14 @@ actor Dictation {
     }
 }
 
-let (commands, commandInput) = AsyncStream<String>.makeStream()
+/// One line from the app: a command, and for `start`, the vocabulary to expect during that hold.
+struct Request {
+    let cmd: String
+    let words: [String]
+    let builtin: Bool
+}
+
+let (requests, requestInput) = AsyncStream<Request>.makeStream()
 
 // stdin is read on its own thread. When the app closes the pipe, the helper exits with it.
 Thread.detachNewThread {
@@ -292,9 +308,11 @@ Thread.detachNewThread {
         guard let data = line.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let cmd = object["cmd"] as? String else { continue }
-        commandInput.yield(cmd)
+        let words = object["words"] as? [String] ?? []
+        let builtin = object["builtin"] as? Bool ?? true
+        requestInput.yield(Request(cmd: cmd, words: words, builtin: builtin))
     }
-    commandInput.finish()
+    requestInput.finish()
     exit(0)
 }
 
@@ -306,18 +324,18 @@ Task {
         }
         await dictation.prewarm()
         Out.send(["event": "ready"])
-        // Commands run one at a time, so a stop that arrives during start waits for it.
-        for await cmd in commands {
-            switch cmd {
-            case "start": await dictation.start()
+        // Requests run one at a time, so a stop that arrives during start waits for it.
+        for await request in requests {
+            switch request.cmd {
+            case "start": await dictation.start(hints: contextualHints(request.words, builtin: request.builtin))
             case "stop": await dictation.stop()
             case "cancel": await dictation.cancel()
-            default: Out.send(["event": "error", "message": "Unknown command \(cmd)"])
+            default: Out.send(["event": "error", "message": "Unknown command \(request.cmd)"])
             }
         }
     } else {
         Out.send(["event": "ready"])
-        for await _ in commands {
+        for await _ in requests {
             Out.send(["event": "error", "message": "Dictation needs macOS 26 or later."])
         }
     }
