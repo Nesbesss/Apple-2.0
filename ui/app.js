@@ -54,7 +54,6 @@
     done: new Set(), // ids whose work finished while the user was not looking
     dragId: null, // session id being dragged in the sidebar
     dragGroup: null, // group index being dragged in the sidebar
-    settingsTab: "voice", // the Settings section on show: "voice" | "appearance" | "alerts" | "usage"
     tokens: {}, // session id -> tokens it has used, from the last count (see refreshTokens)
     newKind: "claude",
     newCount: 1, // how many sessions the New session dialog opens at once
@@ -112,6 +111,8 @@
     imagegenStage: $("#imagegen-stage"),
     resumeFilter: $("#resume-filter"),
     settings: $("#settings"),
+    settingsIndex: $("#settings-index"),
+    voiceSummary: $("#voice-summary"),
     hotkeyChoices: $("#hotkey-choices"),
     accentSwatches: $("#accent-swatches"),
     accentCustom: $("#accent-custom"),
@@ -122,6 +123,7 @@
     alertsToggle: $("#alerts-toggle"),
     pingChoices: $("#ping-choices"),
     afterTypingChoices: $("#after-typing-choices"),
+    afterTypingHint: $("#after-typing-hint"),
     typedSoundToggle: $("#typed-sound-toggle"),
     builtinToggle: $("#builtin-toggle"),
     vocabForm: $("#vocab-form"),
@@ -368,10 +370,11 @@
     }
     el.historyList.replaceChildren(...dictationHistory.map((item, index) => {
       const when = new Date(item.at);
+      const where = item.into ? `Typed into ${item.into}` : "Not typed";
       return h("li", { class: "history-item" },
         h("div", { class: "history-meta" },
           h("time", { datetime: when.toISOString() }, when.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })),
-          h("span", {}, item.into ? `Typed into ${item.into}` : "Not typed")),
+          h("span", { title: where }, where)),
         h("p", { class: "history-text" }, item.text),
         h("div", { class: "history-actions" },
           h("button", { class: "btn btn-outline", type: "button", onclick: (e) => copyHistory(item, e.currentTarget) }, "Copy"),
@@ -2219,41 +2222,69 @@
     el.pingChoices.replaceChildren(...DONE_PINGS.map((name) => h("span", { class: "ping-option" },
       choice(name === settings.donePing, () => chooseDonePing(name), name),
       h("button", { class: "ping-preview", type: "button", title: `Preview ${name}`, "aria-label": `Preview ${name}`, onclick: () => previewDonePing(name) }))));
-    el.afterTypingChoices.replaceChildren(...Object.keys(AFTER_TYPING).map((key) => {
-      const option = AFTER_TYPING[key];
-      const card = choice(key === settings.afterTyping, () => setSetting("afterTyping", key),
-        h("span", { class: "choice-text" }, h("strong", {}, option.label), h("small", {}, option.hint)));
-      card.classList.add("choice-card");
-      return card;
-    }));
+    el.afterTypingChoices.replaceChildren(...Object.keys(AFTER_TYPING).map((key) =>
+      choice(key === settings.afterTyping, () => setSetting("afterTyping", key), AFTER_TYPING[key].label)));
+    el.afterTypingHint.textContent = AFTER_TYPING[settings.afterTyping].hint;
+    renderVoiceSummary();
     el.typedSoundToggle.setAttribute("aria-checked", String(settings.typedSound));
     renderVocabulary();
     renderHistory();
     renderClaudeLimit();
     renderClaudeStatus();
-    renderSettingsTabs();
+    syncSettingsIndex();
   }
 
-  // Settings is split into sections. Only the chosen one is shown. The choice lives in state, so a
-  // setting that re-renders the page keeps the section open.
-  const SETTINGS_TABS = ["voice", "vocabulary", "history", "appearance", "alerts", "usage"];
+  // The voice setup in plain words, so the choices below can be checked at a glance.
+  const AFTER_SUMMARY = {
+    none: "Nothing is added after them.",
+    space: "A space is added after them.",
+    return: "Return is pressed after them, so the agent runs what you said.",
+  };
 
-  function setSettingsTab(tab) {
-    if (!SETTINGS_TABS.includes(tab)) return;
-    state.settingsTab = tab;
-    stored.set("settingsTab", tab);
-    renderSettingsTabs();
+  function renderVoiceSummary() {
+    const mode = HOTKEYS[settings.hotkey];
+    const sound = settings.typedSound ? "A sound plays once they are typed." : "No sound plays.";
+    el.voiceSummary.replaceChildren(
+      h("span", { class: "voice-keys", "aria-hidden": "true" }, mode.symbol),
+      h("div", { class: "voice-summary-text" },
+        h("p", { class: "voice-summary-title" }, `Hold ${mode.label} to talk.`),
+        h("p", { class: "voice-summary-body" },
+          `Let go and the words are typed into the focused session. ${AFTER_SUMMARY[settings.afterTyping]} ${sound}`)));
   }
 
-  function renderSettingsTabs() {
-    document.querySelectorAll("#settings-tabs .settings-tab").forEach((btn) => {
-      const on = btn.dataset.tab === state.settingsTab;
-      btn.setAttribute("aria-selected", String(on));
-      btn.tabIndex = on ? 0 : -1;
+  // The jump index at the top of Settings. It marks the section nearest the top as the page scrolls, and a
+  // click scrolls to one. A click holds the mark while the scroll runs, so a section too short to reach the
+  // top (the last ones) still gets the mark it was given.
+  const INDEX_HOLD_MS = 800;
+  let indexHoldUntil = 0;
+
+  function markSettingsSection(id) {
+    el.settingsIndex.querySelectorAll("button").forEach((btn) => {
+      if (btn.dataset.target === id) btn.setAttribute("aria-current", "true");
+      else btn.removeAttribute("aria-current");
     });
-    document.querySelectorAll("#settings [role='tabpanel']").forEach((panel) => {
-      panel.hidden = panel.dataset.tab !== state.settingsTab;
-    });
+  }
+
+  function syncSettingsIndex() {
+    if (performance.now() < indexHoldUntil || el.settings.hidden) return;
+    const pageTop = el.settings.getBoundingClientRect().top;
+    const line = el.settings.clientHeight / 3; // a section counts as reached once it is in the top third
+    const targets = [...el.settingsIndex.querySelectorAll("button")].map((btn) => btn.dataset.target);
+    const atEnd = el.settings.scrollTop + el.settings.clientHeight >= el.settings.scrollHeight - 2;
+    let current = targets[0];
+    for (const id of targets) {
+      if (document.getElementById(id).getBoundingClientRect().top - pageTop <= line) current = id;
+    }
+    markSettingsSection(atEnd && el.settings.scrollTop > 0 ? targets[targets.length - 1] : current);
+  }
+
+  function jumpToSection(id, smooth) {
+    const section = document.getElementById(id);
+    if (!section) return;
+    markSettingsSection(id);
+    indexHoldUntil = performance.now() + INDEX_HOLD_MS;
+    const calm = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    section.scrollIntoView({ behavior: smooth && !calm ? "smooth" : "auto", block: "start" });
   }
 
   // A radio-style option. The checked one is outlined.
@@ -2478,6 +2509,7 @@
   // The Settings row for Claude Code's status line. Connecting adds the script and the entry; disconnecting removes them.
   function renderClaudeStatus() {
     const status = claudeLimits ? claudeLimits.status : "off";
+    $("#claude-status-row").dataset.state = status;
     const captured = claudeLimits && claudeLimits.capturedAtMs;
     $("#claude-status-text").textContent = status === "live"
       ? `Connected · updated ${captured ? formatSpan(Date.now() - captured) : "just now"} ago`
@@ -2563,14 +2595,14 @@
     $("#home-terminal").addEventListener("click", () => openSessionDialog("terminal"));
     $("#home-browser").addEventListener("click", () => openSessionDialog("browser"));
     $("#resume-refresh").addEventListener("click", loadTranscripts);
-    // The usage block opens the Usage section, from the top, whatever section was showing before.
+    // The usage block opens Settings at the Usage section.
     $("#usage").addEventListener("click", () => {
-      setSettingsTab("usage");
       showView("settings");
-      requestAnimationFrame(() => { $("#settings").scrollTop = 0; });
+      requestAnimationFrame(() => jumpToSection("usage-settings", false));
     });
-    document.querySelectorAll("#settings-tabs .settings-tab").forEach((btn) =>
-      btn.addEventListener("click", () => setSettingsTab(btn.dataset.tab)));
+    el.settingsIndex.querySelectorAll("button").forEach((btn) =>
+      btn.addEventListener("click", () => jumpToSection(btn.dataset.target, true)));
+    el.settings.addEventListener("scroll", syncSettingsIndex, { passive: true });
     $("#claude-calibrate").addEventListener("click", calibrateClaudeLimit);
     $("#claude-calibrate-input").addEventListener("keydown", (e) => { if (e.key === "Enter") calibrateClaudeLimit(); });
     $("#claude-limit-clear").addEventListener("click", clearClaudeLimit);
@@ -3292,9 +3324,6 @@
   async function start() {
     loadSettings();
     applyColors();
-    // The section last open comes back on launch. Anything unexpected falls back to Voice.
-    const savedTab = stored.get("settingsTab");
-    state.settingsTab = SETTINGS_TABS.includes(savedTab) ? savedTab : "voice";
     bindUi();
     await bindBackendEvents();
     syncAlerts();
