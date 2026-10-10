@@ -57,6 +57,7 @@
     dragId: null, // session id being dragged in the sidebar
     dragGroup: null, // group index being dragged in the sidebar
     tokens: {}, // session id -> tokens it has used, from the last count (see refreshTokens)
+    windowUnits: {}, // session id -> its weighted cost in the current five-hour block (see sessionFiveHour)
     newKind: "claude",
     newCount: 1, // how many sessions the New session dialog opens at once
     view: "home", // "home" | "group" | "settings"
@@ -839,8 +840,8 @@
 
   // Cards narrower than this drop the elapsed time from the status, so the token count still fits.
   const NARROW_CARD_PX = 380;
-  // A Claude card narrower than this drops the elapsed time when it shows its five-hour share, so the share is not clipped.
-  const SHARE_TIGHT_CARD_PX = 440;
+  // A Claude card narrower than this drops the elapsed time and the unit when it shows its five-hour share, so the share is not clipped.
+  const SHARE_TIGHT_CARD_PX = 460;
 
   // The status pill: "Working · 10s · 42k tok · 5h 39%". Reads only cached values, so it is cheap to run every second.
   // The 5h piece is on Claude cards only, and `five` is null when there is no share to show.
@@ -859,7 +860,7 @@
     if (five) {
       // Warm from 70% of the window and hot from 90%, the same thresholds as the sidebar meter.
       const level = five.percent >= 90 ? "is-hot" : five.percent >= 70 ? "is-warm" : "";
-      pieces.push(h("span", { class: "status-sep" }, " · "), h("span", { class: `status-window ${level}`.trim() }, `5h ${five.estimated ? "~" : ""}${five.percent}%`));
+      pieces.push(h("span", { class: "status-sep" }, " · "), h("span", { class: `status-window ${level}`.trim() }, `5h ${five.percent}%`));
     }
     card.status.replaceChildren(...pieces);
   }
@@ -879,8 +880,11 @@
     if (!requests.length) return;
     tokensBusy = true;
     try {
-      const counts = await invoke("session_tokens", { requests });
-      for (const { id, tokens } of counts) state.tokens[id] = tokens;
+      const counts = await invoke("session_tokens", { requests, sinceMs: blockStartMs() });
+      for (const { id, tokens, units } of counts) {
+        state.tokens[id] = tokens;
+        state.windowUnits[id] = units;
+      }
       requests.forEach((request) => updateCardStatus(request.id));
     } catch {
       // Keep the last counts. The header shows the older number until the next read succeeds.
@@ -893,7 +897,7 @@
     const card = cards.get(id);
     if (!card) return;
     const st = stateOf(id);
-    const five = card.kind === "claude" ? claudeFiveHour(Date.now()) : null;
+    const five = card.kind === "claude" ? sessionFiveHour(id, Date.now()) : null;
     card.dot.dataset.state = st;
     card.status.dataset.state = st;
     renderStatus(card, id, st, five);
@@ -2869,8 +2873,9 @@
     if (usageBusy || document.hidden) return; // the meters are only read while the window is visible
     usageBusy = true;
     try {
-      usageSnapshot = await invoke("usage_snapshot");
+      // The status line first: its reset time sets the block both totals are counted from.
       claudeLimits = await invoke("claude_limits").catch(() => null);
+      usageSnapshot = await invoke("usage_snapshot", { sinceMs: blockStartMs() });
       renderUsage();
       // The card statuses carry the five-hour share, so they take the new reading now rather than on their next tick.
       for (const id of cards.keys()) updateCardStatus(id);
@@ -2895,17 +2900,27 @@
     return { share: used / 100, text: `${Math.round(used)}% · ${resets}`, title };
   }
 
-  // The five-hour share on a Claude card: Claude Code's own figure once its status line reports, else the estimate
-  // when the user has set a limit. Null when neither is known, so the status leaves the piece out.
-  function claudeFiveHour(now) {
+  // The start of Claude's current five-hour block, from the reset time Claude Code reports. Null without the status
+  // line, and then the backend counts the last five hours.
+  function blockStartMs() {
     const win = claudeLimits && claudeLimits.status === "live" ? claudeLimits.fiveHour : null;
-    if (win) {
-      const percent = Math.round(win.usedPercent);
-      return { percent, estimated: false, title: `Claude's five-hour window is ${percent}% used, account-wide. Claude Code reported it ${formatAgo(now - win.observedAtMs)}, and the window resets ${formatWhen(win.resetsAtMs)}.` };
-    }
-    if (!settings.claudeLimit || !usageSnapshot) return null;
-    const percent = Math.round((usageSnapshot.claude.tokens5h / settings.claudeLimit) * 100);
-    return { percent, estimated: true, title: `About ${percent}% of your five-hour limit, estimated from Claude Code transcripts against the limit set in Settings. Connect Claude's status line there for its own figure.` };
+    return win ? win.resetsAtMs - 5 * HOUR_MS : null;
+  }
+
+  // This session's estimated share of Claude's five-hour window: its weighted cost in the current block, as a share
+  // of the account's, applied to the percent Claude Code reports. Null without the status line, or before the counts.
+  function sessionFiveHour(id, now) {
+    const win = claudeLimits && claudeLimits.status === "live" ? claudeLimits.fiveHour : null;
+    const mine = state.windowUnits[id];
+    const all = usageSnapshot ? usageSnapshot.claude.windowUnits : 0;
+    if (!win || mine == null || !all) return null;
+    // The account total refreshes less often than the session counts, so a session can briefly lead it. Cap at 100%.
+    const percent = Math.round(win.usedPercent * Math.min(1, mine / all));
+    const reported = Math.round(win.usedPercent);
+    return {
+      percent,
+      title: `This session's estimated share of the ${reported}% Claude Code reports for your five-hour window. It weights each model by its price, so Opus counts more than Sonnet and Haiku less. Cache reads are left out. Claude Code reported that ${formatAgo(now - win.observedAtMs)}, and the window resets ${formatWhen(win.resetsAtMs)}.`,
+    };
   }
 
   const CLAUDE_STATUS_LINE_TEXT = "Nesa will write ~/.claude/nesa-statusline.py and set statusLine in ~/.claude/settings.json. Your other settings stay as they are, and the original file is kept as settings.json.nesa-backup. While the status line is on, Claude Code hides some footer hints, such as the hold-space-to-speak hint.";

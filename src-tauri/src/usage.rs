@@ -33,6 +33,9 @@ const CODEX_FILES: usize = 6;
 const CODEX_TAIL_BYTES: u64 = 256 * 1024;
 /// Transcripts are searched this many folders deep: projects/<folder>/<session>/subagents/<file>.
 const CLAUDE_DEPTH: usize = 5;
+/// Cache writes cost 1.25 times input, and output costs five times input, in every current model's price.
+const CACHE_WRITE_RATIO: f64 = 1.25;
+const OUTPUT_RATIO: f64 = 5.0;
 
 /// Shared by every call to `usage_snapshot`, so the transcripts are only read incrementally once.
 #[derive(Default)]
@@ -58,6 +61,8 @@ struct Message {
     cache_creation: u64,
     output: u64,
     cache_read: u64,
+    /// The model's input price against Sonnet 5.5. See `model_weight`.
+    weight: f64,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq, Default)]
@@ -68,6 +73,9 @@ pub struct Claude {
     pub tokens_last_hour: u64,
     pub cache_read_5h: u64,
     pub messages_5h: u64,
+    /// The weighted cost of the messages since the start of the block the caller asked for. Each model's
+    /// messages are weighted by its price (see `model_weight`), in input-token units of Sonnet 5.5.
+    pub window_units: f64,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -95,6 +103,42 @@ pub struct Snapshot {
     pub generated_at_ms: u64,
     pub claude: Claude,
     pub codex: Option<Codex>,
+}
+
+/// A model's input price against Sonnet 5.5's, which is $2 per million input tokens. Output costs five times input
+/// in every model's price, so the same weight applies to a message's output. Unknown models, and the empty model
+/// of a line that names none, count as Sonnet. Haiku 5.5 costs five times as much for a prompt over 100K tokens.
+pub fn model_weight(model: &str, prompt_tokens: u64) -> f64 {
+    if model.contains("fable") {
+        5.0 // $10 input
+    } else if model.contains("opus-5-5") {
+        2.0 // $4 input
+    } else if model.contains("opus") {
+        2.5 // $5 input: Opus 5 and Opus 4.6 to 4.8
+    } else if model.contains("sonnet-4") {
+        1.5 // $3 input: Sonnet 4.6
+    } else if model.contains("haiku-5") {
+        if prompt_tokens > 100_000 { 0.25 } else { 0.05 } // $0.10 input, or $0.50 over 100K tokens
+    } else if model.contains("haiku") {
+        0.5 // $1 input: Haiku 4.5
+    } else {
+        1.0
+    }
+}
+
+/// The start of the block the caller asks about: `since_ms` when given, kept within the last five hours. Without
+/// one, the last five hours.
+pub fn window_start(since_ms: Option<u64>, now: u64) -> u64 {
+    let rolling = now.saturating_sub(WINDOW_MS);
+    since_ms.map_or(rolling, |since| since.clamp(rolling, now))
+}
+
+impl Message {
+    /// The message's cost in input-token units of Sonnet 5.5: input and cache writes at their prices, output at
+    /// five times input, all times the model's weight. Cache reads are left out, as they are in the estimate.
+    fn units(&self) -> f64 {
+        self.weight * (self.input as f64 + CACHE_WRITE_RATIO * self.cache_creation as f64 + OUTPUT_RATIO * self.output as f64)
+    }
 }
 
 impl Meter {
@@ -167,12 +211,20 @@ impl Meter {
         }
         let Some(at_ms) = value["timestamp"].as_str().and_then(parse_iso_ms) else { return };
         let field = |name: &str| usage[name].as_u64().unwrap_or(0);
+        let (input, cache_creation, cache_read) = (
+            field("input_tokens"),
+            field("cache_creation_input_tokens"),
+            field("cache_read_input_tokens"),
+        );
+        let model = value["message"]["model"].as_str().unwrap_or("");
         let seen = Message {
             at_ms,
-            input: field("input_tokens"),
-            cache_creation: field("cache_creation_input_tokens"),
+            input,
+            cache_creation,
             output: field("output_tokens"),
-            cache_read: field("cache_read_input_tokens"),
+            cache_read,
+            // Set by the first line of the message. Later lines of the same message only raise its counts.
+            weight: model_weight(model, input + cache_creation + cache_read),
         };
         // Streaming repeats a message with a growing output count. Keep the largest value of each field.
         let entry = self.messages.entry(id.to_string()).or_insert(seen);
@@ -187,6 +239,11 @@ impl Meter {
     /// as they are in the usage bar.
     pub fn billed_tokens(&self) -> u64 {
         self.messages.values().map(|m| m.input + m.cache_creation + m.output).sum()
+    }
+
+    /// The weighted cost of the messages at or after `since`, counted once each.
+    pub fn units_since(&self, since: u64) -> f64 {
+        self.messages.values().filter(|m| m.at_ms >= since).map(Message::units).sum()
     }
 
     fn totals(&self, now: u64) -> Claude {
@@ -352,17 +409,24 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
-pub fn snapshot(meter: &Mutex<Meter>, claude_root: &Path, codex_root: &Path, now: u64) -> Snapshot {
-    let claude = meter.lock().unwrap_or_else(|e| e.into_inner()).refresh(claude_root, now);
+pub fn snapshot(meter: &Mutex<Meter>, claude_root: &Path, codex_root: &Path, now: u64, since: u64) -> Snapshot {
+    let claude = {
+        let mut meter = meter.lock().unwrap_or_else(|e| e.into_inner());
+        let mut claude = meter.refresh(claude_root, now);
+        claude.window_units = meter.units_since(since);
+        claude
+    };
     Snapshot { generated_at_ms: now, claude, codex: codex_limits(codex_root, now) }
 }
 
 #[tauri::command]
-pub async fn usage_snapshot(state: tauri::State<'_, UsageState>) -> Result<Snapshot, String> {
+pub async fn usage_snapshot(state: tauri::State<'_, UsageState>, since_ms: Option<u64>) -> Result<Snapshot, String> {
     let meter = state.0.clone();
     tauri::async_runtime::spawn_blocking(move || -> Result<Snapshot, String> {
         let home = dirs::home_dir().ok_or("Could not find the home folder")?;
-        Ok(snapshot(&meter, &home.join(".claude/projects"), &home.join(".codex/sessions"), now_ms()))
+        let now = now_ms();
+        let since = window_start(since_ms, now);
+        Ok(snapshot(&meter, &home.join(".claude/projects"), &home.join(".codex/sessions"), now, since))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -423,6 +487,62 @@ mod tests {
         let d = doy - (153 * mp + 2) / 5 + 1;
         let m = if mp < 10 { mp + 3 } else { mp - 9 };
         (yoe + era * 400 + i64::from(m <= 2), m, d)
+    }
+
+    /// An assistant line that names its model, as Claude Code writes it.
+    fn model_line(id: &str, at: &str, model: &str, input: u64, cache_creation: u64, output: u64) -> String {
+        format!(
+            r#"{{"type":"assistant","timestamp":"{at}","message":{{"id":"{id}","model":"{model}","usage":{{"input_tokens":{input},"cache_creation_input_tokens":{cache_creation},"output_tokens":{output},"cache_read_input_tokens":0}}}}}}"#
+        )
+    }
+
+    #[test]
+    fn each_model_is_weighted_by_its_input_price_against_sonnet() {
+        assert_eq!(model_weight("claude-sonnet-5-5", 0), 1.0);
+        assert_eq!(model_weight("claude-opus-5-5", 0), 2.0);
+        assert_eq!(model_weight("claude-opus-4-7", 0), 2.5);
+        assert_eq!(model_weight("claude-sonnet-4-6", 0), 1.5);
+        assert_eq!(model_weight("claude-fable-5-1", 0), 5.0);
+        assert_eq!(model_weight("claude-haiku-4-5", 0), 0.5);
+        assert_eq!(model_weight("claude-haiku-5-5", 50_000), 0.05);
+        assert_eq!(model_weight("claude-haiku-5-5", 150_000), 0.25, "Haiku 5.5 is priced higher over 100K prompt tokens");
+        assert_eq!(model_weight("<synthetic>", 0), 1.0, "a line that names no model counts as Sonnet");
+    }
+
+    #[test]
+    fn an_opus_message_costs_twice_a_sonnet_message_with_the_same_counts() {
+        let at = iso(NOW - HOUR_MS);
+        let mut opus = Meter::default();
+        opus.apply_line(&model_line("a", &at, "claude-opus-5-5", 1000, 0, 200));
+        let mut sonnet = Meter::default();
+        sonnet.apply_line(&model_line("b", &at, "claude-sonnet-5-5", 1000, 0, 200));
+        assert_eq!(sonnet.units_since(0), 1000.0 + 5.0 * 200.0);
+        assert_eq!(opus.units_since(0), 2.0 * sonnet.units_since(0));
+    }
+
+    #[test]
+    fn cache_writes_cost_a_quarter_more_than_input_and_output_five_times() {
+        let at = iso(NOW - HOUR_MS);
+        let mut meter = Meter::default();
+        meter.apply_line(&model_line("c", &at, "claude-sonnet-5-5", 0, 100, 10));
+        assert_eq!(meter.units_since(0), 100.0 * 1.25 + 10.0 * 5.0);
+    }
+
+    #[test]
+    fn the_block_counts_only_messages_at_or_after_its_start() {
+        let mut meter = Meter::default();
+        meter.apply_line(&model_line("old", &iso(NOW - 4 * HOUR_MS), "claude-sonnet-5-5", 1000, 0, 0));
+        meter.apply_line(&model_line("new", &iso(NOW - HOUR_MS), "claude-sonnet-5-5", 300, 0, 0));
+        assert_eq!(meter.units_since(NOW - 3 * HOUR_MS), 300.0);
+        assert_eq!(meter.units_since(0), 1300.0);
+    }
+
+    #[test]
+    fn the_block_start_stays_within_the_last_five_hours() {
+        assert_eq!(window_start(None, NOW), NOW - WINDOW_MS);
+        assert_eq!(window_start(Some(NOW - 6 * HOUR_MS), NOW), NOW - WINDOW_MS, "older than the window is clamped");
+        assert_eq!(window_start(Some(NOW - HOUR_MS), NOW), NOW - HOUR_MS);
+        assert_eq!(window_start(Some(NOW + 1), NOW), NOW, "a start after now is clamped");
     }
 
     #[test]

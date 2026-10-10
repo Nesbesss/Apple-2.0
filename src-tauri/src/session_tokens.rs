@@ -7,7 +7,7 @@
 //! Codex: the rollout's last usage report that has data. Codex keeps a running total, so the last one is the
 //! session's total. Its cached input is left out, as Claude's cache reads are.
 
-use crate::usage::Meter;
+use crate::usage::{now_ms, window_start, Meter};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -47,6 +47,8 @@ pub struct Request {
 pub struct Count {
     pub id: String,
     pub tokens: u64,
+    /// The session's weighted cost since the start of the block, in the units `Meter::window_units` uses.
+    pub units: f64,
 }
 
 impl Tokens {
@@ -164,14 +166,27 @@ fn last_codex_total(path: &Path) -> Option<u64> {
 }
 
 #[tauri::command]
-pub async fn session_tokens(requests: Vec<Request>, state: tauri::State<'_, TokenState>) -> Result<Vec<Count>, String> {
+pub async fn session_tokens(
+    requests: Vec<Request>,
+    since_ms: Option<u64>,
+    state: tauri::State<'_, TokenState>,
+) -> Result<Vec<Count>, String> {
     let tokens = state.0.clone();
     tauri::async_runtime::spawn_blocking(move || -> Result<Vec<Count>, String> {
         let home = dirs::home_dir().ok_or("Could not find the home folder")?;
+        let since = window_start(since_ms, now_ms());
         let mut tokens = tokens.lock().unwrap_or_else(|e| e.into_inner());
         Ok(requests
             .iter()
-            .filter_map(|request| tokens.count(&home, request).map(|tokens| Count { id: request.id.clone(), tokens }))
+            .filter_map(|request| {
+                let total = tokens.count(&home, request)?;
+                let units = request
+                    .agent_id
+                    .as_deref()
+                    .and_then(|id| tokens.claude.get(id))
+                    .map_or(0.0, |meter| meter.units_since(since));
+                Some(Count { id: request.id.clone(), tokens: total, units })
+            })
             .collect())
     })
     .await

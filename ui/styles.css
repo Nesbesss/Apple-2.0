@@ -599,8 +599,8 @@ body:not(.view-group) .sidebar-hide { display: none; }
 .card-meta { flex: 0 100 auto; }
 .status-sep, .status-unit { white-space: pre; }
 .card.narrow .status-time, .card.narrow .status-sep.time, .card.narrow .status-unit { display: none; }
-/* A Claude card with its five-hour share has no room for the elapsed time at this width, so the time goes first. */
-.card.share-tight .card-status.has-share .status-time, .card.share-tight .card-status.has-share .status-sep.time { display: none; }
+/* A Claude card with its five-hour share has no room for the elapsed time or the unit at this width, so they go first. */
+.card.share-tight .card-status.has-share .status-time, .card.share-tight .card-status.has-share .status-sep.time, .card.share-tight .card-status.has-share .status-unit { display: none; }
 .card.narrow .card-meta { display: none; }
 .card-head .btn svg { width: 12px; height: 12px; }
 
