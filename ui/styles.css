@@ -464,7 +464,8 @@ body:not(.view-group) .sidebar-hide { display: none; }
   border-bottom: 1px solid var(--line);
 }
 .toolbar-title {
-  min-width: 0;
+  flex: 0 1 auto;
+  min-width: 48px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2049,13 +2050,14 @@ body:not(.view-group) .sidebar-hide { display: none; }
 
 /* The idle voice pill lives in the toolbar, so it stays out of Home and Settings. Holding the keys still shows it. */
 body:not(.view-group) .dictation:not(.is-visible) { display: none; }
-/* In a narrow window the toolbar's buttons reach the middle, where the idle dot sits, so the dot steps aside.
+/* In a narrow window the toolbar's buttons reach the middle, where the idle dot sits, so the dot fades out. Opacity, not display,
+   lets the pill still shrink back when it closes.
    Holding the keys still opens the pill over the toolbar. */
 @media (max-width: 1180px) {
-  body:not(.sidebar-hidden) .dictation:not(.is-visible) { display: none; }
+  body:not(.sidebar-hidden) .dictation:not(.is-visible) { opacity: 0; }
 }
 @media (max-width: 960px) {
-  .dictation:not(.is-visible) { display: none; }
+  .dictation:not(.is-visible) { opacity: 0; }
 }
 
 /* Scrollbars */
@@ -2065,3 +2067,13 @@ body:not(.view-group) .dictation:not(.is-visible) { display: none; }
 ::-webkit-scrollbar-track { background: transparent; }
 
 .home:focus-visible, .settings:focus-visible, .group-list:focus-visible, .grid:focus-visible { outline: none; }
+
+/* At the window's narrower sizes the toolbar keeps the group's name readable: the session count goes first,
+   then the New buttons drop their words and keep their icons (the tooltip still names them). */
+@media (max-width: 1180px) {
+  .toolbar-count { display: none; }
+}
+@media (max-width: 1080px) {
+  .toolbar .btn .btn-label { display: none; }
+  .toolbar .btn { padding: 0 8px; }
+}
