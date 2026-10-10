@@ -63,6 +63,7 @@
       <button class="btn" id="new-claude"><span class="logo logo-claude" data-logo="claude"></span>New Claude</button>
       <button class="btn" id="new-codex"><span class="logo logo-openai" data-logo="openai"></span>New Codex</button>
       <button class="btn" id="new-terminal"><span class="kind-mark" data-icon="terminal"></span>Terminal</button>
+      <button class="btn" id="new-browser"><span class="kind-mark" data-icon="globe"></span>Browser</button>
     </header>
 
     <section class="stage" id="stage">
@@ -80,6 +81,10 @@
             <span class="logo logo-openai" data-logo="openai"></span>
             <span class="empty-action-text"><strong>New Codex session</strong><small>Codex CLI in a folder</small></span>
           </button>
+        </div>
+        <div class="empty-more">
+          <button class="btn btn-outline" id="empty-terminal"><span class="kind-mark" data-icon="terminal"></span>Terminal</button>
+          <button class="btn btn-outline" id="empty-browser"><span class="kind-mark" data-icon="globe"></span>Browser</button>
         </div>
         <p class="empty-hint"><kbd>&#8984;</kbd><kbd>N</kbd> starts a session from anywhere</p>
       </div>
@@ -104,10 +109,10 @@
             <p class="page-sub" id="home-sub"></p>
           </div>
           <div class="page-actions">
-            <button class="btn" id="home-claude"><span class="logo logo-claude" data-logo="claude"></span>New Claude</button>
-            <button class="btn" id="home-codex"><span class="logo logo-openai" data-logo="openai"></span>New Codex</button>
-            <button class="btn" id="home-terminal"><span class="kind-mark" data-icon="terminal"></span>Terminal</button>
-            <button class="btn" id="home-browser"><span class="kind-mark" data-icon="globe"></span>Browser</button>
+            <button class="btn btn-outline" id="home-claude"><span class="logo logo-claude" data-logo="claude"></span>New Claude</button>
+            <button class="btn btn-outline" id="home-codex"><span class="logo logo-openai" data-logo="openai"></span>New Codex</button>
+            <button class="btn btn-outline" id="home-terminal"><span class="kind-mark" data-icon="terminal"></span>Terminal</button>
+            <button class="btn btn-outline" id="home-browser"><span class="kind-mark" data-icon="globe"></span>Browser</button>
           </div>
         </header>
 
@@ -128,7 +133,7 @@
 
         <section class="page-block">
           <div class="block-head">
-            <h2 class="block-title">Resume a session</h2>
+            <h2 class="block-title">Resume a session <span class="block-count" id="resume-count"></span></h2>
             <button class="icon-btn" id="resume-refresh" title="Look for sessions again" aria-label="Look for sessions again" data-icon="restart"></button>
           </div>
           <div class="resume-tools">

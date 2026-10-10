@@ -62,6 +62,7 @@
     imageGen: { available: false, busy: false, error: "", stopped: false, prompt: "", images: [], selected: 0, previews: new Map(), revealed: new Set(), startedAt: 0, timer: 0 },
     resumeFilter: "all", // "all" | "claude" | "codex"
     resumeQuery: "",
+    resumeShown: 8, // how many matches the list shows; "Show more" raises it
     resumeGroup: 0, // index of the group a resumed session is filed under
     arriving: false, // the next grid render plays the entrance animation on every card
   };
@@ -99,6 +100,7 @@
     workingList: $("#working-list"),
     groupCards: $("#group-cards"),
     resumeList: $("#resume-list"),
+    resumeCount: $("#resume-count"),
     resumeGroup: $("#resume-group"),
     resumeSearch: $("#resume-search"),
     imagegenBlock: $("#imagegen-block"),
@@ -456,13 +458,24 @@
     node.classList.add(name);
   }
 
+  // Errors stay longer, since they are the ones worth reading twice. A click dismisses a toast early.
+  const TOAST_ICON = { error: "alert", ok: "check" };
+  const TOAST_MS = { error: 6000 };
+  const TOAST_DEFAULT_MS = 3500;
+
   function toast(message, kind = "error") {
-    const node = h("div", { class: `toast ${kind}` }, errorText(message));
+    const mark = TOAST_ICON[kind] ? h("span", { class: "toast-icon", html: ICONS[TOAST_ICON[kind]] }) : null;
+    const node = h("div", { class: `toast ${kind}`, role: "status" }, mark, h("span", { class: "toast-text" }, errorText(message)));
     el.toasts.append(node);
-    setTimeout(() => {
+    let timer = null;
+    const dismiss = () => {
+      clearTimeout(timer);
+      if (node.classList.contains("leaving")) return;
       node.classList.add("leaving");
       setTimeout(() => node.remove(), 200); // matches the toast-out animation
-    }, 4300);
+    };
+    timer = setTimeout(dismiss, TOAST_MS[kind] || TOAST_DEFAULT_MS);
+    node.addEventListener("click", dismiss);
   }
 
   // Runs a command; failures become a toast instead of an exception.
@@ -757,10 +770,10 @@
     const maximized = state.maximizedId === session.id;
     card.name.textContent = session.name;
     if (session.kind === "browser") {
-      card.meta.textContent = `browser · ${hostOf(session.url) || "no page yet"}`;
+      card.meta.textContent = hostOf(session.url) || "no page yet";
       card.meta.title = session.url || "";
     } else {
-      card.meta.textContent = `${session.kind} · ${shortPath(session.cwd)}`;
+      card.meta.textContent = shortPath(session.cwd);
       card.meta.title = session.cwd;
     }
     card.expand.replaceChildren(icon(maximized ? "collapse" : "expand"));
@@ -1731,24 +1744,57 @@
     el.homeHint.textContent = `Hold ${hotkey().symbol} to talk to a running session. The voice-mode keys are set in Settings.`;
   }
 
+  // "Working · 3m 10s · 42k tok" for a working session, just "Done" for a finished one.
+  function liveStateText(id, st) {
+    const parts = [STATE_WORD[st]];
+    const since = state.workingSince.get(id);
+    if (st === "working" && since) parts.push(formatElapsed(Date.now() - since));
+    if (st === "working" && state.tokens[id]) parts.push(`${formatTokens(state.tokens[id])} tok`);
+    return parts.join(" · ");
+  }
+
+  // Ticks the time on the working rows. Only their text changes, so Home is not rebuilt every second.
+  function tickHomeWorking() {
+    if (state.view !== "home") return;
+    document.querySelectorAll("#home [data-live-working]").forEach((node) => {
+      node.textContent = liveStateText(node.dataset.liveWorking, "working");
+    });
+  }
+
   function liveRow(session, st) {
     const index = groups().findIndex((g) => g.sessions.some((s) => s.id === session.id));
+    const text = h("span", {}, liveStateText(session.id, st));
+    if (st === "working") text.dataset.liveWorking = session.id;
     return h("button", { class: "row row-button", type: "button", onclick: () => focusSession(session.id) },
       kindMark(session.kind),
       h("span", { class: "row-main" },
         h("span", { class: "row-title" }, session.name),
         h("span", { class: "row-meta" }, `${groups()[index].name} · ${shortPath(session.cwd)}`)),
-      h("span", { class: "row-state" }, h("span", { class: "dot", "data-state": st }), STATE_WORD[st]));
+      h("span", { class: "row-state" }, h("span", { class: "dot", "data-state": st }), text));
   }
+
+  // How many session marks a group card shows before it says "+N".
+  const GROUP_CARD_MARKS = 6;
 
   function groupCard(group, index) {
     const count = (word) => group.sessions.filter((s) => stateOf(s.id) === word).length;
+    const empty = group.sessions.length === 0;
     const parts = [plural(group.sessions.length, "session")];
     if (count("working")) parts.push(`${count("working")} working`);
     if (count("done")) parts.push(`${count("done")} finished`);
+    // A dot on a mark only for the states worth a glance. Idle sessions stay plain.
+    const mark = (session) => {
+      const st = stateOf(session.id);
+      return h("span", { class: "gc-mark", title: `${session.name} · ${STATE_WORD[st]}` },
+        kindMark(session.kind),
+        st === "idle" ? null : h("span", { class: "dot", "data-state": st }));
+    };
+    const marks = group.sessions.slice(0, GROUP_CARD_MARKS).map(mark);
+    const more = group.sessions.length - marks.length;
     return h("button", { class: `group-card${index === state.selected ? " current" : ""}`, type: "button", onclick: () => selectGroup(index) },
       h("span", { class: "group-card-name" }, group.name),
-      h("span", { class: "group-card-meta" }, parts.join(" · ")));
+      h("span", { class: "group-card-meta" }, empty ? "Empty" : parts.join(" · ")),
+      empty ? null : h("span", { class: "gc-marks" }, ...marks, more > 0 ? h("span", { class: "gc-more" }, `+${more}`) : null));
   }
 
   // -------------------------------------------------------------- image gen
@@ -2131,8 +2177,18 @@
       btn.setAttribute("aria-checked", String(btn.dataset.filter === state.resumeFilter)));
   }
 
-  function renderResumeList() {
+  // The list starts short, because a real user has hundreds of transcripts. Each "Show more" adds a page.
+  const RESUME_FIRST = 8;
+  const RESUME_PAGE = 25;
+
+  // Back to the short list. Called when the filter or the search changes.
+  function resetResumeShown() {
+    state.resumeShown = RESUME_FIRST;
+  }
+
+  function renderResumeList({ focusFrom = -1 } = {}) {
     if (!state.transcripts) {
+      el.resumeCount.textContent = "";
       el.resumeList.replaceChildren(h("p", { class: "home-empty" }, "Looking for past sessions…"));
       return;
     }
@@ -2140,13 +2196,33 @@
     const shown = state.transcripts.filter((item) =>
       (state.resumeFilter === "all" || item.kind === state.resumeFilter) &&
       (!query || `${item.title} ${item.cwd}`.toLowerCase().includes(query)));
+    const total = state.transcripts.length;
+    el.resumeCount.textContent = !total ? "" : shown.length === total ? `\u00B7 ${total}` : `\u00B7 ${shown.length} of ${total}`;
     if (!shown.length) {
-      el.resumeList.replaceChildren(h("p", { class: "home-empty" }, state.transcripts.length
+      el.resumeList.replaceChildren(h("p", { class: "home-empty" }, total
         ? "No sessions match that search."
         : "No past Claude or Codex sessions were found."));
       return;
     }
-    el.resumeList.replaceChildren(...shown.map((item) => resumeRow(item)));
+    const visible = shown.slice(0, state.resumeShown);
+    const rows = visible.map((item) => resumeRow(item));
+    const rest = shown.length - visible.length;
+    if (rest > 0) {
+      rows.push(h("button", {
+        class: "row-more", type: "button",
+        onclick: () => {
+          const from = visible.length;
+          state.resumeShown += RESUME_PAGE;
+          renderResumeList({ focusFrom: from });
+        },
+      }, `Show ${Math.min(rest, RESUME_PAGE)} more`, h("span", { class: "row-more-rest" }, `${rest} left`)));
+    }
+    el.resumeList.replaceChildren(...rows);
+    // The button that was clicked is gone, so a keyboard user would lose their place. Land on the first new row.
+    if (focusFrom >= 0 && rows[focusFrom]) {
+      const target = rows[focusFrom].querySelector("button:not(:disabled)");
+      if (target) target.focus({ preventScroll: true });
+    }
   }
 
   function resumeRow(item) {
@@ -2159,12 +2235,19 @@
     } else {
       action = h("button", { class: "btn btn-outline", type: "button", onclick: (e) => resumeTranscript(item, e.currentTarget) }, "Resume");
     }
-    return h("div", { class: "row", title: item.cwd },
+    // The whole row does what the button does. The button stays for the keyboard and as the visible cue.
+    const row = h("div", { class: `row${action.disabled ? "" : " row-click"}`, title: item.cwd },
       logo(item.kind),
       h("span", { class: "row-main" },
         h("span", { class: "row-title" }, name),
         h("span", { class: "row-meta" }, `${shortPath(item.cwd)} · ${timeAgo(item.updated)}`)),
       action);
+    if (!action.disabled) {
+      row.addEventListener("click", (e) => {
+        if (!e.target.closest("button")) action.click();
+      });
+    }
+    return row;
   }
 
   // Starts the past session in the chosen group, then opens it. The backend returns an existing
@@ -2614,11 +2697,13 @@
     $("#claude-status-action").addEventListener("click", toggleClaudeStatus);
     el.resumeSearch.addEventListener("input", (e) => {
       state.resumeQuery = e.target.value;
+      resetResumeShown();
       renderResumeList();
     });
     el.resumeGroup.addEventListener("change", (e) => { state.resumeGroup = Number(e.target.value); });
     el.resumeFilter.querySelectorAll("button").forEach((btn) => btn.addEventListener("click", () => {
       state.resumeFilter = btn.dataset.filter;
+      resetResumeShown();
       renderResumeGroups();
       renderResumeList();
     }));
@@ -3401,6 +3486,9 @@
     $("#new-claude").addEventListener("click", () => openSessionDialog("claude"));
     $("#new-codex").addEventListener("click", () => openSessionDialog("codex"));
     $("#new-terminal").addEventListener("click", () => openSessionDialog("terminal"));
+    $("#new-browser").addEventListener("click", () => openSessionDialog("browser"));
+    $("#empty-terminal").addEventListener("click", () => openSessionDialog("terminal"));
+    $("#empty-browser").addEventListener("click", () => openSessionDialog("browser"));
     $("#empty-claude").addEventListener("click", () => openSessionDialog("claude"));
     $("#empty-codex").addEventListener("click", () => openSessionDialog("codex"));
 
@@ -3475,7 +3563,10 @@
     syncDonePing();
     startUsage();
     // Keeps "Working · 1m 04s" counting up. Only working cards change, so this is cheap.
-    setInterval(() => state.workingSince.forEach((_, id) => updateCardStatus(id)), 1000);
+    setInterval(() => {
+      state.workingSince.forEach((_, id) => updateCardStatus(id));
+      tickHomeWorking();
+    }, 1000);
     setInterval(refreshTokens, TOKEN_REFRESH_MS);
     refreshTokens();
 
