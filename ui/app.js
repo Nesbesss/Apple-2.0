@@ -747,10 +747,11 @@
     if (session.kind !== "browser") registerImageLinks(term, session);
 
     const ui = buildCardDom(session);
-    const card = { id: session.id, term, fit, ...ui, opened: false, live: false, sentSize: null, scroll: null, timer: 0 };
+    const card = { id: session.id, kind: session.kind, term, fit, ...ui, opened: false, live: false, sentSize: null, scroll: null, timer: 0 };
     new ResizeObserver(() => {
       // A narrow card has no room for the elapsed time next to the token count, so it drops first.
       card.root.classList.toggle("narrow", card.root.clientWidth < NARROW_CARD_PX);
+      card.root.classList.toggle("share-tight", card.kind === "claude" && card.root.clientWidth < SHARE_TIGHT_CARD_PX);
       clearTimeout(card.timer);
       card.timer = setTimeout(() => fitCard(card), 50);
     }).observe(card.body);
@@ -838,9 +839,12 @@
 
   // Cards narrower than this drop the elapsed time from the status, so the token count still fits.
   const NARROW_CARD_PX = 380;
+  // A Claude card narrower than this drops the elapsed time when it shows its five-hour share, so the share is not clipped.
+  const SHARE_TIGHT_CARD_PX = 440;
 
-  // The status pill: "Working · 10s · 42k tok". Reads only cached values, so it is cheap to run every second.
-  function renderStatus(card, id, st) {
+  // The status pill: "Working · 10s · 42k tok · 5h 39%". Reads only cached values, so it is cheap to run every second.
+  // The 5h piece is on Claude cards only, and `five` is null when there is no share to show.
+  function renderStatus(card, id, st, five) {
     const since = state.workingSince.get(id);
     const tokens = state.tokens[id];
     // Each piece is a flex item, and flex items drop the spaces at their edges, so the separators are items too.
@@ -850,6 +854,12 @@
     }
     if (tokens) {
       pieces.push(h("span", { class: "status-sep" }, " · "), h("span", { class: "status-tokens" }, formatTokens(tokens)), h("span", { class: "status-unit" }, " tok"));
+    }
+    card.status.classList.toggle("has-share", !!five);
+    if (five) {
+      // Warm from 70% of the window and hot from 90%, the same thresholds as the sidebar meter.
+      const level = five.percent >= 90 ? "is-hot" : five.percent >= 70 ? "is-warm" : "";
+      pieces.push(h("span", { class: "status-sep" }, " · "), h("span", { class: `status-window ${level}`.trim() }, `5h ${five.estimated ? "~" : ""}${five.percent}%`));
     }
     card.status.replaceChildren(...pieces);
   }
@@ -883,10 +893,14 @@
     const card = cards.get(id);
     if (!card) return;
     const st = stateOf(id);
+    const five = card.kind === "claude" ? claudeFiveHour(Date.now()) : null;
     card.dot.dataset.state = st;
     card.status.dataset.state = st;
-    renderStatus(card, id, st);
-    card.status.title = state.tokens[id] ? "Tokens this session has used: input and output, with cache reads left out." : "";
+    renderStatus(card, id, st, five);
+    const notes = [];
+    if (state.tokens[id]) notes.push("Tokens this session has used: input and output, with cache reads left out.");
+    if (five) notes.push(five.title);
+    card.status.title = notes.join(" ");
     card.root.classList.toggle("is-working", st === "working");
     card.restart.hidden = st !== "exited";
   }
@@ -2858,6 +2872,8 @@
       usageSnapshot = await invoke("usage_snapshot");
       claudeLimits = await invoke("claude_limits").catch(() => null);
       renderUsage();
+      // The card statuses carry the five-hour share, so they take the new reading now rather than on their next tick.
+      for (const id of cards.keys()) updateCardStatus(id);
       if (state.view === "settings") {
         renderClaudeLimit();
         renderClaudeStatus();
@@ -2877,6 +2893,19 @@
     const title = `Claude Code reported ${formatAgo(now - win.observedAtMs)}. The window resets ${formatWhen(win.resetsAtMs)}. The same figure /usage shows.`;
     if (used <= 0) return { share: 0, text: `unused · ${resets}`, title };
     return { share: used / 100, text: `${Math.round(used)}% · ${resets}`, title };
+  }
+
+  // The five-hour share on a Claude card: Claude Code's own figure once its status line reports, else the estimate
+  // when the user has set a limit. Null when neither is known, so the status leaves the piece out.
+  function claudeFiveHour(now) {
+    const win = claudeLimits && claudeLimits.status === "live" ? claudeLimits.fiveHour : null;
+    if (win) {
+      const percent = Math.round(win.usedPercent);
+      return { percent, estimated: false, title: `Claude's five-hour window is ${percent}% used, account-wide. Claude Code reported it ${formatAgo(now - win.observedAtMs)}, and the window resets ${formatWhen(win.resetsAtMs)}.` };
+    }
+    if (!settings.claudeLimit || !usageSnapshot) return null;
+    const percent = Math.round((usageSnapshot.claude.tokens5h / settings.claudeLimit) * 100);
+    return { percent, estimated: true, title: `About ${percent}% of your five-hour limit, estimated from Claude Code transcripts against the limit set in Settings. Connect Claude's status line there for its own figure.` };
   }
 
   const CLAUDE_STATUS_LINE_TEXT = "Nesa will write ~/.claude/nesa-statusline.py and set statusLine in ~/.claude/settings.json. Your other settings stay as they are, and the original file is kept as settings.json.nesa-backup. While the status line is on, Claude Code hides some footer hints, such as the hold-space-to-speak hint.";

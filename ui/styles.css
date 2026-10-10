@@ -570,6 +570,9 @@ body:not(.view-group) .sidebar-hide { display: none; }
 .card-status[data-state="working"] { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
 .card-status[data-state="done"] { background: color-mix(in srgb, var(--done) 14%, transparent); color: var(--done); }
 .card-status[data-state="exited"] { color: var(--dim); }
+/* The five-hour share on a Claude card. It takes the same warm and hot colours as the sidebar meter. */
+.status-window.is-warm { color: var(--warn); }
+.status-window.is-hot { color: var(--fail); }
 
 /* A thin sweep along the header while the agent is busy. */
 .card.is-working .card-head::after {
@@ -594,8 +597,10 @@ body:not(.view-group) .sidebar-hide { display: none; }
 .card-head .btn, .card-head .icon-btn { flex: none; }
 /* In a narrow card the path gives way first, so the status and its token count stay readable. */
 .card-meta { flex: 0 100 auto; }
-.status-sep { white-space: pre; }
+.status-sep, .status-unit { white-space: pre; }
 .card.narrow .status-time, .card.narrow .status-sep.time, .card.narrow .status-unit { display: none; }
+/* A Claude card with its five-hour share has no room for the elapsed time at this width, so the time goes first. */
+.card.share-tight .card-status.has-share .status-time, .card.share-tight .card-status.has-share .status-sep.time { display: none; }
 .card.narrow .card-meta { display: none; }
 .card-head .btn svg { width: 12px; height: 12px; }
 
