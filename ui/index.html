@@ -12,6 +12,7 @@
     <div class="sidebar-head" data-tauri-drag-region>
       <span class="brand-mark" data-tauri-drag-region><svg viewBox="340 250 344 520" aria-hidden="true"><path d="M396 706V318L628 706V318" fill="none" stroke="currentColor" stroke-width="86" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
       <span class="brand" data-tauri-drag-region>Nesa</span>
+      <button class="icon-btn sidebar-hide" id="sidebar-hide" type="button" aria-label="Hide sidebar" data-icon="sidebar"></button>
     </div>
     <nav class="nav" aria-label="Views">
       <button class="nav-item" type="button" data-view="home" title="Home (⌘0)"><span class="nav-icon" data-icon="home"></span>Home</button>
@@ -56,6 +57,7 @@
 
   <main class="main">
     <header class="toolbar" id="toolbar" data-tauri-drag-region>
+      <button class="icon-btn sidebar-show" id="sidebar-show" type="button" aria-label="Show sidebar" data-icon="sidebar"></button>
       <h1 class="toolbar-title" id="group-title" data-tauri-drag-region></h1>
       <span class="toolbar-count" id="group-count" data-tauri-drag-region></span>
       <div class="summary" id="summary"></div>

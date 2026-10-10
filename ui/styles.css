@@ -3,6 +3,11 @@
 :root {
   color-scheme: dark;
 
+  /* The sidebar's width. It is 0 while the sidebar is hidden in a group (see body.sidebar-hidden), and the
+     voice pill centres itself on what is left. --toolbar-reserve is the room the toolbar's own content takes. */
+  --sidebar-w: 232px;
+  --toolbar-reserve: 620px;
+
   --sidebar: #171718;
   --canvas: #121213;
   --card: #1c1c1e;
@@ -38,7 +43,7 @@ html, body { height: 100%; }
 
 body {
   display: grid;
-  grid-template-columns: 232px minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
   background: var(--canvas);
   color: var(--text);
   font: 13px/1.4 var(--font-ui);
@@ -48,6 +53,14 @@ body {
   -webkit-user-select: none;
   overflow: hidden;
 }
+
+/* Hidden sidebar: only in a group's view. Home and Settings have no toolbar, and the window's traffic lights
+   sit over the sidebar's corner. The toolbar then clears the lights itself and carries the Show button. */
+body.sidebar-hidden.view-group { --sidebar-w: 0px; --toolbar-reserve: 704px; }
+body.sidebar-hidden.view-group .sidebar { min-width: 0; overflow: hidden; visibility: hidden; border-right: 0; }
+body.sidebar-hidden.view-group .toolbar { padding-left: 76px; }
+.icon-btn.sidebar-show { display: none; margin-right: 4px; }
+body.sidebar-hidden.view-group .sidebar-show { display: inline-grid; }
 
 button, input { font: inherit; color: inherit; }
 button { cursor: default; background: none; border: 0; padding: 0; }
@@ -148,6 +161,10 @@ kbd {
 /* pointer-events: the header drags the window from its own element, not from the glyph inside. */
 .brand-mark svg { width: 13px; height: 16px; pointer-events: none; }
 .brand { font-size: 13px; font-weight: 600; letter-spacing: -0.01em; white-space: nowrap; }
+/* Hide-sidebar button: at the head's right edge, and only while the pointer is over the sidebar. */
+.sidebar-hide { margin: 0 12px 0 auto; opacity: 0; transition: opacity var(--ease), color var(--ease), background-color var(--ease), transform 120ms var(--ease-out); }
+.sidebar:hover .sidebar-hide, .sidebar-hide:focus-visible { opacity: 1; }
+body:not(.view-group) .sidebar-hide { display: none; }
 
 .sidebar-section {
   display: flex;
@@ -171,9 +188,9 @@ kbd {
 .usage {
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 5px;
   width: 100%;
-  padding: 8px 10px 9px;
+  padding: 8px 10px;
   margin-bottom: 4px;
   border-radius: 8px;
   text-align: left;
@@ -182,10 +199,10 @@ kbd {
 .usage:hover { background: var(--hover); }
 .usage-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-areas: "name text" "track track";
+  grid-template-columns: 78px minmax(0, 1fr) 36px;
+  grid-template-areas: "name track text";
+  align-items: center;
   column-gap: 8px;
-  row-gap: 4px;
   font-size: 11px;
   line-height: 1.2;
 }
@@ -193,7 +210,6 @@ kbd {
 .usage-name em { font-style: normal; font-weight: 400; color: var(--dim); }
 .usage-text {
   grid-area: text;
-  max-width: 150px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -264,17 +280,67 @@ kbd {
 .group + .group { margin-top: 6px; }
 
 .group-row {
+  --row-bg: var(--sidebar); /* what the row's "…" button fades into */
   display: flex;
   align-items: center;
   gap: 8px;
   height: 30px;
-  padding: 0 10px 0 12px;
+  padding: 0 10px 0 6px;
   border-radius: 6px;
   color: var(--muted);
   transition: color var(--ease), background-color var(--ease);
 }
-.group-row:hover { background: var(--hover); color: var(--text); }
-.group-row.selected { background: var(--selected); color: var(--text); }
+.group-row:hover { --row-bg: var(--hover); background: var(--hover); color: var(--text); }
+.group-row.selected { --row-bg: var(--selected); background: var(--selected); color: var(--text); }
+.group-row:focus-visible, .session-row:focus-visible { outline-offset: -2px; }
+
+/* Fold button at the start of a group. The chevron points right when folded and down when open. */
+.group-chevron {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 20px;
+  margin-right: -2px;
+  color: var(--dim);
+  transition: color var(--ease);
+}
+.group-chevron svg { width: 14px; height: 14px; transition: transform 160ms var(--ease-out); }
+.group-chevron.open svg { transform: rotate(90deg); }
+.group-row:hover .group-chevron, .group-chevron:hover { color: var(--text); }
+
+/* The "…" button on a hovered or focused row. It overlaps the end of the name, which fades out under it, and
+   it takes almost no room in the row. Opacity hides it, so the layout never jumps. */
+.row-more {
+  position: relative;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin-left: -22px;
+  border-radius: 5px;
+  background: var(--row-bg);
+  color: var(--muted);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--ease), color var(--ease);
+}
+.row-more::before {
+  content: "";
+  position: absolute;
+  right: 100%;
+  top: 0;
+  bottom: 0;
+  width: 14px;
+  background: linear-gradient(90deg, transparent, var(--row-bg));
+  pointer-events: none;
+}
+.row-more svg { width: 14px; height: 14px; }
+.group-row:hover .row-more, .group-row:focus-within .row-more,
+.session-row:hover .row-more, .session-row:focus-within .row-more { opacity: 1; pointer-events: auto; }
+.row-more:hover { color: var(--text); }
+.dragging .row-more { opacity: 0; }
 .group-name {
   flex: 1;
   min-width: 0;
@@ -318,6 +384,7 @@ kbd {
   border-left: 1px solid var(--line);
 }
 .session-row {
+  --row-bg: var(--sidebar);
   display: flex;
   align-items: center;
   gap: 7px;
@@ -329,8 +396,8 @@ kbd {
   transition: color var(--ease), background-color var(--ease), opacity var(--ease);
 }
 .session-row + .session-row { margin-top: 1px; }
-.session-row:hover { background: var(--hover); color: var(--text); }
-.session-row.focused { background: var(--selected); color: var(--text); }
+.session-row:hover { --row-bg: var(--hover); background: var(--hover); color: var(--text); }
+.session-row.focused, .session-row.focused:hover { --row-bg: var(--selected); background: var(--selected); color: var(--text); }
 .session-row.dragging { opacity: 0.45; }
 .group.dragging > .group-row { opacity: 0.45; }
 
@@ -368,6 +435,8 @@ kbd {
 .dot[data-state="working"] { background: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
 .dot[data-state="done"] { background: var(--done); }
 .dot[data-state="exited"] { background: transparent; box-shadow: inset 0 0 0 1.5px var(--dim); }
+/* An idle session is the usual case, so its sidebar row shows nothing; only what needs a glance gets a mark. */
+.session-row .dot[data-state="idle"] { background: transparent; }
 /* A group shows a dot only when one of its sessions needs attention. */
 .group-row .dot { background: transparent; }
 .group-row .dot[data-state="working"] { background: var(--accent); }
@@ -1572,7 +1641,7 @@ kbd {
 .dictation {
   --tone: var(--accent);
   position: fixed;
-  left: calc(232px + (100vw - 232px) / 2); /* centred on the main column, not the window */
+  left: calc(var(--sidebar-w) + (100vw - var(--sidebar-w)) / 2); /* centred on the main column, not the window */
   top: 26px; /* the middle of the 52px toolbar */
   z-index: 50;
   display: flex;
@@ -1599,8 +1668,8 @@ kbd {
 }
 
 .dictation.is-visible {
-  /* 232px sidebar and about 620px for the toolbar's title and buttons, so the pill never covers them. */
-  width: clamp(240px, calc(100vw - 852px), 560px);
+  /* The sidebar and about 620px for the toolbar's title and buttons, so the pill never covers them. */
+  width: clamp(240px, calc(100vw - var(--sidebar-w) - var(--toolbar-reserve)), 560px);
   height: 44px;
   padding: 0 14px 0 8px; /* the badge sits 8px in, so it is inset evenly from the top and bottom edges */
   border-radius: 22px;
@@ -1825,7 +1894,7 @@ kbd {
     box-shadow: inset 0 0 0 1px transparent;
   }
 }
-.session-row.flash { animation: row-flash 1.6s var(--ease-out); }
+.session-row.flash, .group-row.flash { animation: row-flash 1.6s var(--ease-out); }
 
 @keyframes dialog-in { from { opacity: 0; transform: translateY(10px) scale(0.98); } }
 @keyframes backdrop-in { from { opacity: 0; } }
@@ -1845,6 +1914,7 @@ kbd {
   .empty:not([hidden]) > *,
   .toolbar-title.swap,
   .session-row.flash,
+  .group-row.flash,
   .dialog[open],
   .dialog[open]::backdrop,
   .menu,
