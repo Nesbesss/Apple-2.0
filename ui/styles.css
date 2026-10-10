@@ -475,22 +475,44 @@ body:not(.view-group) .sidebar-hide { display: none; }
   font-weight: 600;
 }
 .toolbar-count { margin-left: 8px; color: var(--muted); font-size: 12px; white-space: nowrap; }
-.summary { display: flex; gap: 6px; margin-left: 10px; }
-.stat {
-  display: inline-flex;
+/* The status strip under the toolbar: the group's agents by state, its tokens, the usage on this Mac, and the context the
+   focused session has left. It wraps before it can push the window's edge out of reach. */
+.status-strip {
+  display: flex;
   align-items: center;
-  gap: 6px;
-  height: 22px;
-  padding: 0 9px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: var(--card);
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  min-height: 34px;
+  flex: none;
+  padding: 6px 16px 6px 20px;
+  border-bottom: 1px solid var(--line);
+  background: var(--canvas);
   color: var(--muted);
-  font-size: 11.5px;
-  white-space: nowrap;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
-.stat .dot { width: 6px; height: 6px; }
+.status-strip[hidden] { display: none; }
+.strip-group { display: inline-flex; align-items: center; gap: 7px; min-width: 0; white-space: nowrap; }
+.strip-stat { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.strip-stat strong { color: var(--text); font-weight: 600; }
+.strip-stat.is-zero, .strip-stat.is-zero strong { color: var(--dim); font-weight: 500; }
+.strip-stat .dot { width: 6px; height: 6px; }
+.strip-stat .dot[data-state="idle"] { background: transparent; box-shadow: inset 0 0 0 1.5px var(--dim); }
+.strip-label { color: var(--dim); }
+.strip-value { color: var(--text); font-weight: 600; }
+.strip-name { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+.strip-sep { flex: none; width: 1px; height: 14px; background: var(--line); }
+.strip-track { position: relative; flex: none; width: 56px; height: 4px; border-radius: 2px; background: var(--card); overflow: hidden; }
+.strip-fill { position: absolute; inset: 0 auto 0 0; border-radius: inherit; background: var(--accent); }
+.strip-track.is-warm .strip-fill { background: var(--warn); }
+.strip-track.is-hot .strip-fill { background: var(--fail); }
+/* For context, the bar is how much is left: plenty is green, and it turns amber, then red, as the room runs out. */
+.strip-context .strip-fill { background: var(--done); }
+.strip-context .strip-track.low .strip-fill { background: var(--warn); }
+.strip-context .strip-track.critical .strip-fill { background: var(--fail); }
+@media (max-width: 1080px) {
+  .strip-usage .strip-track { display: none; }
+}
 
 .stage { position: relative; flex: 1; min-height: 0; }
 
@@ -2111,3 +2133,169 @@ body:not(.view-group) .dictation:not(.is-visible) { display: none; }
   .toolbar .btn .btn-label { display: none; }
   .toolbar .btn { padding: 0 8px; }
 }
+
+/* ------------------------------------------------------------ card header
+   The context chip and the subagent button sit after the status pill. */
+.card-ctx {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--hover);
+  color: var(--text);
+  font-size: 11.5px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.card-ctx[hidden] { display: none; }
+.card-ctx-track { position: relative; width: 26px; height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.card-ctx-fill { position: absolute; inset: 0 auto 0 0; border-radius: inherit; background: var(--done); }
+.card-ctx[data-level="low"] .card-ctx-fill { background: var(--warn); }
+.card-ctx[data-level="critical"] .card-ctx-fill { background: var(--fail); }
+.card-ctx[data-level="low"] .card-ctx-text { color: var(--warn); }
+.card-ctx[data-level="critical"] .card-ctx-text { color: var(--fail); }
+/* A narrow card keeps the meter alone. Its note, with the figure, is in the tooltip. */
+.card.narrow .card-ctx-text { display: none; }
+.card.narrow .card-ctx { padding: 0 6px; }
+
+.card-sub {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+.card-sub[hidden] { display: none; }
+.card-sub svg { width: 12px; height: 12px; }
+.card-sub:hover { background: var(--hover); color: var(--text); }
+/* A narrow card keeps its status readable: the subagent button leaves the header, and its menu item stays. */
+.card.narrow .card-sub { display: none; }
+
+/* ------------------------------------------------------- subagent viewer
+   A panel over the card's body. The terminal under it keeps running, and comes back when the panel closes. */
+.card-subs {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--card);
+}
+.card-subs[hidden] { display: none; }
+.subs-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  min-height: 40px;
+  padding: 0 8px 0 10px;
+  border-bottom: 1px solid var(--line);
+}
+.subs-title { display: flex; flex: 1; flex-direction: column; min-width: 0; line-height: 1.3; }
+.subs-title strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 600; }
+.subs-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11.5px; }
+.subs-nav { display: inline-flex; align-items: center; gap: 2px; color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.subs-count { padding: 0 4px; }
+.subs-nav .icon-btn:disabled { opacity: 0.35; pointer-events: none; }
+.subs-body { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 10px 14px; }
+.subs-empty { padding: 18px 6px; color: var(--muted); line-height: 1.5; }
+.subs-list { display: flex; flex-direction: column; gap: 2px; }
+.sub-item { display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 9px 10px; border-radius: 8px; text-align: left; }
+.sub-item:hover, .sub-item:focus-visible { background: var(--hover); }
+.sub-item .dot { flex: none; margin-top: 5px; }
+.sub-main { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
+.sub-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.sub-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11.5px; }
+.subs-back {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 8px 0 4px;
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.subs-back svg { width: 12px; height: 12px; }
+.subs-back:hover { background: var(--hover); color: var(--text); }
+.sub-earlier { padding: 0 2px 10px; color: var(--dim); font-size: 11.5px; }
+.sub-entries { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.sub-entry { padding: 8px 10px; border-left: 2px solid var(--line); border-radius: 0 8px 8px 0; background: var(--canvas); }
+.sub-entry[data-role="user"] { border-left-color: var(--accent); }
+.sub-entry[data-role="assistant"] { border-left-color: var(--done); }
+.sub-entry[data-role="tool"] { border-left-color: var(--warn); }
+.sub-entry-head { display: block; color: var(--muted); font-size: 11px; font-weight: 600; }
+.sub-entry-text { max-height: 260px; margin: 4px 0 0; overflow-y: auto; color: var(--text); font: 12px/1.55 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.sub-entry[data-role="user"] .sub-entry-text,
+.sub-entry[data-role="assistant"] .sub-entry-text { font-family: inherit; font-size: 12.5px; line-height: 1.55; }
+
+/* --------------------------------------------------------------- sidebar
+   A session with subagents has a chevron. Opened, its subagents sit under its row, indented by depth. */
+.session-toggle {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  color: var(--dim);
+}
+.session-toggle svg { width: 12px; height: 12px; transition: transform 160ms var(--ease-out); }
+.session-toggle[aria-expanded="true"] svg { transform: rotate(90deg); }
+.session-toggle:hover { color: var(--text); }
+.session-toggle-gap { flex: none; width: 14px; }
+.session-subs {
+  flex: none;
+  min-width: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 16px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.sub-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 26px;
+  padding: 0 8px 0 calc(40px + (var(--depth, 1) - 1) * 12px);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: default;
+}
+.sub-row:hover, .sub-row:focus-visible { background: var(--hover); color: var(--text); }
+.sub-row:focus-visible { outline-offset: -2px; }
+.sub-row .dot { flex: none; width: 6px; height: 6px; }
+.sub-row-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sub-row-meta { flex: none; color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; }
+.sub-row.sub-empty { padding-left: 40px; color: var(--dim); font-style: italic; }
+
+/* A session's context left: a hairline along the bottom of its row. Plenty is green, then amber, then red. */
+.session-row { position: relative; }
+.row-ctx {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 1px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--line);
+  overflow: hidden;
+  pointer-events: none;
+}
+.row-ctx-fill { position: absolute; inset: 0 auto 0 0; border-radius: inherit; background: var(--done); }
+.row-ctx[data-level="low"] .row-ctx-fill { background: var(--warn); }
+.row-ctx[data-level="critical"] .row-ctx-fill { background: var(--fail); }

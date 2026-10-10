@@ -60,13 +60,16 @@
       <button class="icon-btn sidebar-show" id="sidebar-show" type="button" aria-label="Show sidebar" data-icon="sidebar"></button>
       <h1 class="toolbar-title" id="group-title" data-tauri-drag-region></h1>
       <span class="toolbar-count" id="group-count" data-tauri-drag-region></span>
-      <div class="summary" id="summary"></div>
       <span class="spacer" data-tauri-drag-region></span>
       <button class="btn" id="new-claude" title="New Claude session" aria-label="New Claude session"><span class="logo logo-claude" data-logo="claude"></span><span class="btn-label">New Claude</span></button>
       <button class="btn" id="new-codex" title="New Codex session" aria-label="New Codex session"><span class="logo logo-openai" data-logo="openai"></span><span class="btn-label">New Codex</span></button>
       <button class="btn" id="new-terminal" title="New terminal" aria-label="New terminal"><span class="kind-mark" data-icon="terminal"></span><span class="btn-label">Terminal</span></button>
       <button class="btn" id="new-browser" title="New browser" aria-label="New browser"><span class="kind-mark" data-icon="globe"></span><span class="btn-label">Browser</span></button>
     </header>
+
+    <!-- The status strip under the toolbar: this group's agents, their tokens, the usage on this Mac, and the context left
+         in the focused session. Filled by app.js (updateSummary). -->
+    <div class="status-strip" id="summary" aria-label="Status of this group" hidden></div>
 
     <section class="stage" id="stage">
       <div class="grid" id="grid"></div>

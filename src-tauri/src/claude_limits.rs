@@ -134,7 +134,26 @@ pub fn disconnect(root: &Path) -> Result<(), String> {
     write_settings(&settings_path, &settings)?;
     let _ = fs::remove_file(root.join(SCRIPT_NAME));
     let _ = fs::remove_file(root.join(REPORT_NAME));
+    let _ = fs::remove_dir_all(root.join(crate::context::CONTEXT_DIR));
     Ok(())
+}
+
+/// Replaces Nesa's script with this build's copy when the status line is connected and the copy on disk is older.
+/// Nothing else is touched, and a status line that is not Nesa's is left alone. Returns whether the script was replaced.
+pub fn refresh_script(root: &Path) -> Result<bool, String> {
+    let settings = read_settings(&root.join(SETTINGS_NAME))?;
+    if !is_connected(&settings) {
+        return Ok(false);
+    }
+    let path = root.join(SCRIPT_NAME);
+    if fs::read_to_string(&path).is_ok_and(|current| current == SCRIPT) {
+        return Ok(false);
+    }
+    // Written beside the script and renamed over it, so Claude Code never runs a half-written file.
+    let temp = root.join(format!("{SCRIPT_NAME}.tmp"));
+    fs::write(&temp, SCRIPT).map_err(|e| format!("Could not write {SCRIPT_NAME}: {e}"))?;
+    fs::rename(&temp, &path).map_err(|e| format!("Could not replace {SCRIPT_NAME}: {e}"))?;
+    Ok(true)
 }
 
 #[tauri::command]
@@ -161,6 +180,7 @@ pub fn disconnect_claude_limits() -> Result<ClaudeLimits, String> {
 mod tests {
     use super::*;
     use std::io::Write;
+    use crate::context::CONTEXT_DIR;
     use std::process::{Command, Stdio};
 
     /// A scratch folder that is removed when the test ends.
@@ -317,5 +337,47 @@ mod tests {
         assert_eq!(report["fiveHour"]["usedPercent"], 23.5);
         assert_eq!(report["fiveHour"]["resetsAtMs"], 1738425600_u64 * 1000);
         assert_eq!(report["sevenDay"]["usedPercent"], 42.0);
+    }
+
+    #[test]
+    fn the_script_writes_each_sessions_window_and_last_input_and_skips_ids_that_are_not_uuids() {
+        let scratch = Scratch::new("context-script");
+        let claude = scratch.0.join(".claude");
+        connect(&claude).unwrap();
+        let session_id = "2e23b561-73b2-4975-8149-fc9fd89ddf39";
+        run_script(
+            &scratch.0,
+            &format!(
+                r#"{{"session_id":"{session_id}","context_window":{{"context_window_size":1000000,"current_usage":{{"input_tokens":2,"cache_creation_input_tokens":3000,"cache_read_input_tokens":40000,"output_tokens":9}}}}}}"#
+            ),
+        );
+        let record: Value = serde_json::from_str(&fs::read_to_string(claude.join(CONTEXT_DIR).join(format!("{session_id}.json"))).unwrap()).unwrap();
+        assert_eq!(record["contextWindowSize"], 1_000_000);
+        assert_eq!(record["inputTokens"], 43_002, "output is left out, as Claude's used_percentage leaves it out");
+
+        run_script(&scratch.0, r#"{"session_id":"../escape","context_window":{"context_window_size":200000,"current_usage":{"input_tokens":1}}}"#);
+        assert_eq!(fs::read_dir(claude.join(CONTEXT_DIR)).unwrap().count(), 1, "only a session with a real id is written");
+    }
+
+    #[test]
+    fn a_connected_script_older_than_this_build_is_replaced_and_other_files_are_not() {
+        let scratch = Scratch::new("refresh");
+        connect(&scratch.0).unwrap();
+        assert_eq!(refresh_script(&scratch.0), Ok(false), "a current script is left alone");
+        fs::write(scratch.0.join(SCRIPT_NAME), "# an older copy\n").unwrap();
+        assert_eq!(refresh_script(&scratch.0), Ok(true));
+        assert_eq!(fs::read_to_string(scratch.0.join(SCRIPT_NAME)).unwrap(), SCRIPT);
+        assert!(!scratch.0.join(format!("{SCRIPT_NAME}.tmp")).exists());
+    }
+
+    #[test]
+    fn a_script_is_not_refreshed_when_the_status_line_is_off_or_not_nesas() {
+        let off = Scratch::new("refresh-off");
+        assert_eq!(refresh_script(&off.0), Ok(false));
+        assert!(!off.0.join(SCRIPT_NAME).exists(), "nothing is written while Nesa is not connected");
+        let foreign = Scratch::new("refresh-foreign");
+        fs::write(foreign.0.join(SETTINGS_NAME), r#"{"statusLine":{"type":"command","command":"~/.claude/statusline.sh"}}"#).unwrap();
+        assert_eq!(refresh_script(&foreign.0), Ok(false));
+        assert!(!foreign.0.join(SCRIPT_NAME).exists());
     }
 }

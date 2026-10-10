@@ -47,11 +47,45 @@ pub struct Meter {
     messages: HashMap<String, Message>,
 }
 
+/// Where a transcript was read to, and the unfinished line after that point.
 #[derive(Default)]
-struct Cursor {
+pub struct Cursor {
     offset: u64,
     /// The unfinished last line of the file, kept until its newline arrives.
     partial: Vec<u8>,
+}
+
+/// The complete lines appended to `path` since `cursor` last read it, which moves the cursor past them. A file shorter
+/// than the cursor was replaced, so it is read again from the top. The unfinished last line waits for its newline.
+pub fn read_appended(path: &Path, cursor: &mut Cursor) -> Vec<String> {
+    let Ok(mut file) = File::open(path) else { return Vec::new() };
+    let Ok(len) = file.metadata().map(|m| m.len()) else { return Vec::new() };
+    if len < cursor.offset {
+        *cursor = Cursor::default();
+    }
+    if len == cursor.offset {
+        return Vec::new();
+    }
+    if file.seek(SeekFrom::Start(cursor.offset)).is_err() {
+        return Vec::new();
+    }
+    let mut chunk = Vec::new();
+    if file.take(len - cursor.offset).read_to_end(&mut chunk).is_err() {
+        return Vec::new();
+    }
+    cursor.offset += chunk.len() as u64;
+
+    let mut buf = std::mem::take(&mut cursor.partial);
+    buf.extend_from_slice(&chunk);
+    let mut lines = Vec::new();
+    let mut start = 0;
+    while let Some(pos) = buf[start..].iter().position(|&b| b == b'\n') {
+        lines.push(String::from_utf8_lossy(&buf[start..start + pos]).into_owned());
+        start += pos + 1;
+    }
+    // The unfinished tail is not parsed. It is read again once the rest of the line arrives.
+    cursor.partial = buf[start..].to_vec();
+    lines
 }
 
 #[derive(Clone, Copy, Default)]
@@ -160,43 +194,15 @@ impl Meter {
     /// Reads what was appended to one transcript since the last read. Used for the usage bar's windows and for
     /// one session's total, so both count a message the same way.
     pub fn read_new_lines(&mut self, path: &Path) {
-        let Ok(mut file) = File::open(path) else { return };
-        let Ok(len) = file.metadata().map(|m| m.len()) else { return };
-        let mut lines = Vec::new();
-        {
-            let cursor = self.files.entry(path.to_path_buf()).or_default();
-            // A shorter file was truncated or replaced, so read it again from the top.
-            if len < cursor.offset {
-                *cursor = Cursor::default();
-            }
-            if len == cursor.offset {
-                return;
-            }
-            if file.seek(SeekFrom::Start(cursor.offset)).is_err() {
-                return;
-            }
-            let mut chunk = Vec::new();
-            if file.take(len - cursor.offset).read_to_end(&mut chunk).is_err() {
-                return;
-            }
-            cursor.offset += chunk.len() as u64;
-
-            let mut buf = std::mem::take(&mut cursor.partial);
-            buf.extend_from_slice(&chunk);
-            let mut start = 0;
-            while let Some(pos) = buf[start..].iter().position(|&b| b == b'\n') {
-                lines.push(String::from_utf8_lossy(&buf[start..start + pos]).into_owned());
-                start += pos + 1;
-            }
-            // The unfinished tail is not parsed. It is read again once the rest of the line arrives.
-            cursor.partial = buf[start..].to_vec();
-        }
+        let cursor = self.files.entry(path.to_path_buf()).or_default();
+        let lines = read_appended(path, cursor);
         for line in &lines {
             self.apply_line(line);
         }
     }
 
-    fn apply_line(&mut self, line: &str) {
+    /// Applies one line of a transcript. Lines that are not assistant replies with usage are ignored.
+    pub fn apply_line(&mut self, line: &str) {
         if !line.contains("\"usage\"") {
             return;
         }

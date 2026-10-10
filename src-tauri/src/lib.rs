@@ -2,6 +2,7 @@ mod activity;
 mod agents;
 mod claude_limits;
 mod commands;
+mod context;
 mod corrections;
 mod dictation;
 mod imagegen;
@@ -10,6 +11,7 @@ mod pty;
 mod sound;
 mod store;
 mod session_tokens;
+mod subagents;
 mod transcripts;
 mod usage;
 mod web;
@@ -59,6 +61,12 @@ pub fn run() {
             });
             app.manage(usage::UsageState::default());
             app.manage(session_tokens::TokenState::default());
+            // Nesa's status-line script is a copy made at connect time. Bring an older copy up to date.
+            if let Some(claude) = dirs::home_dir().map(|home| home.join(".claude")) {
+                if let Err(err) = claude_limits::refresh_script(&claude) {
+                    eprintln!("claude status line: {err}");
+                }
+            }
             if let Err(err) = dictation::warm(app.handle(), &app.state::<AppState>()) {
                 eprintln!("dictation: {err}");
             }
@@ -118,6 +126,8 @@ pub fn run() {
             commands::resume_session,
             usage::usage_snapshot,
             session_tokens::session_tokens,
+            subagents::list_subagents,
+            subagents::subagent_view,
             claude_limits::claude_limits,
             claude_limits::connect_claude_limits,
             claude_limits::disconnect_claude_limits,

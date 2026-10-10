@@ -34,6 +34,7 @@
     pencil: stroke('<path d="M10.25 3.25 12.75 5.75 6 12.5H3.5v-2.5z"/>'),
     folder: stroke('<path d="M2.5 4.5h3.25l1.5 1.5h6.25v6.5h-11z"/>'),
     copy: stroke('<rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M3.5 10.5v-6a1 1 0 0 1 1-1h6"/>'),
+    branch: stroke('<circle cx="4.5" cy="3.5" r="1.5"/><circle cx="4.5" cy="12.5" r="1.5"/><circle cx="11.5" cy="6.5" r="1.5"/><path d="M4.5 5v6M11.5 8c0 2.2-2.6 2.5-7 2.5"/>'),
     stop: '<svg viewBox="0 0 16 16" fill="currentColor"><rect x="4" y="4" width="8" height="8" rx="1.5"/></svg>',
     home: stroke('<path d="M2.75 7.5 8 3.25l5.25 4.25V13a.75.75 0 0 1-.75.75H9.5V10h-3v3.75H3.5A.75.75 0 0 1 2.75 13z"/>'),
     keyboard: stroke('<rect x="1.75" y="4" width="12.5" height="8" rx="1.5"/><path d="M4.5 6.75h.01M7 6.75h.01M9.5 6.75h.01M12 6.75h-.5M5 9.5h6"/>'),
@@ -68,6 +69,12 @@
     resumeShown: 8, // how many matches the list shows; "Show more" raises it
     resumeGroup: 0, // index of the group a resumed session is filed under
     arriving: false, // the next grid render plays the entrance animation on every card
+    context: {}, // session id -> { used, window, exact }, or null before the session has replied (see refreshTokens)
+    subagentCount: {}, // session id -> how many subagents it started, nested ones included
+    subagentLists: {}, // session id -> its subagents as the backend lists them, read while they are on screen
+    expanded: new Set(), // session ids whose subagents show under their row in the sidebar
+    viewer: null, // { id, key } while a card's subagent viewer is open: key is null for the list, else the subagent shown
+    viewerView: null, // { key, view } or { key, error } for the subagent the viewer shows
   };
   const cards = new Map(); // id -> card entry (DOM, terminal, size bookkeeping)
   const pendingData = new Map(); // id -> bytes that arrived before the card existed
@@ -752,7 +759,7 @@
     new ResizeObserver(() => {
       // A narrow card has no room for the elapsed time next to the token count, so it drops first.
       card.root.classList.toggle("narrow", card.root.clientWidth < NARROW_CARD_PX);
-      card.root.classList.toggle("share-tight", card.kind === "claude" && card.root.clientWidth < SHARE_TIGHT_CARD_PX);
+      card.root.classList.toggle("share-tight", (card.kind === "claude" || card.kind === "codex") && card.root.clientWidth < SHARE_TIGHT_CARD_PX);
       clearTimeout(card.timer);
       card.timer = setTimeout(() => fitCard(card), 50);
     }).observe(card.body);
@@ -770,6 +777,12 @@
     const meta = h("span", { class: "card-meta" });
     const browser = session.kind === "browser";
     const status = h("span", { class: "card-status", hidden: browser });
+    // The context chip and the subagent button follow the status. updateCardStatus fills them in.
+    const ctxFill = h("span", { class: "card-ctx-fill" });
+    const ctxText = h("span", { class: "card-ctx-text" });
+    const ctx = h("span", { class: "card-ctx", hidden: true, "aria-label": "Context left" }, h("span", { class: "card-ctx-track", "aria-hidden": "true" }, ctxFill), ctxText);
+    const subsCount = h("span", { class: "card-sub-count" });
+    const subsBtn = h("button", { class: "card-sub", type: "button", hidden: true, "aria-label": "Subagents", onclick: () => openViewer(session.id, null) }, icon("branch"), subsCount);
     const restart = h("button", { class: "btn", title: "Restart session", onclick: () => restartWithConfirm(session.id) }, icon("restart"), "Restart");
     const expand = h("button", { class: "icon-btn", onclick: () => toggleMaximize(session.id) });
     const more = h("button", { class: "icon-btn", title: "More", "aria-label": "More", onclick: (e) => openCardMenu(session.id, e.currentTarget) }, icon("more"));
@@ -781,9 +794,11 @@
       ondragend: () => endDrag(),
       ondblclick: (e) => { if (!e.target.closest("button")) toggleMaximize(session.id); },
     },
-      dot, kindMark(session.kind), name, meta, status, h("span", { class: "spacer" }), restart, expand, more);
+      dot, kindMark(session.kind), name, meta, status, ctx, subsBtn, h("span", { class: "spacer" }), restart, expand, more);
     // A browser's page is a native view that covers the body, so the body only shows before a page is open.
-    const body = h("div", { class: "card-body" }, browser ? h("div", { class: "browser-empty" }, "Type an address above, or a search.") : null);
+    // The subagent viewer covers the body. The terminal under it keeps running, and keys pressed in the viewer stay there.
+    const subs = h("div", { class: "card-subs", hidden: true, onkeydown: (e) => onViewerKey(e, session.id) });
+    const body = h("div", { class: "card-body" }, browser ? h("div", { class: "browser-empty" }, "Type an address above, or a search.") : null, subs);
     const bar = browser ? browserBar(session.id) : null;
     // The entrance animation is one-shot: drop its class once it ends, so moving the card later does not replay it.
     const root = h("article", {
@@ -799,7 +814,10 @@
         syncBrowsers();
       },
     }, head, bar, body);
-    return { root, body, dot, name, meta, status, restart, expand, urlInput: bar ? bar.querySelector(".browser-url") : null };
+    return {
+      root, body, dot, name, meta, status, restart, expand, urlInput: bar ? bar.querySelector(".browser-url") : null,
+      ctx, ctxFill, ctxText, subsBtn, subsCount, subs,
+    };
   }
 
   // The address bar of a browser session. Its page is a native view placed under this bar.
@@ -872,20 +890,26 @@
 
   async function refreshTokens() {
     if (tokensBusy || document.hidden) return;
-    const requests = [...cards.values()]
-      .filter((card) => card.root.parentNode === el.grid)
-      .map((card) => findSession(card.id))
-      .filter((s) => s && s.agent_id && (s.kind === "claude" || s.kind === "codex"))
+    // Every Claude and Codex session in the store, not only the cards on screen: the status strip and the sidebar read them too.
+    const requests = allSessions()
+      .filter((s) => s.agent_id && (s.kind === "claude" || s.kind === "codex"))
       .map((s) => ({ id: s.id, kind: s.kind, agentId: s.agent_id }));
     if (!requests.length) return;
     tokensBusy = true;
     try {
       const counts = await invoke("session_tokens", { requests, sinceMs: blockStartMs() });
-      for (const { id, tokens, units } of counts) {
+      let listChanged = false;
+      for (const { id, tokens, units, context, subagents } of counts) {
         state.tokens[id] = tokens;
         state.windowUnits[id] = units;
+        state.context[id] = context;
+        if ((state.subagentCount[id] || 0) !== subagents) listChanged = true;
+        state.subagentCount[id] = subagents;
       }
       requests.forEach((request) => updateCardStatus(request.id));
+      // A session that gained or lost subagents gets or drops its toggle in the sidebar.
+      if (listChanged) renderSidebar();
+      updateSummary();
     } catch {
       // Keep the last counts. The header shows the older number until the next read succeeds.
     } finally {
@@ -897,12 +921,15 @@
     const card = cards.get(id);
     if (!card) return;
     const st = stateOf(id);
-    const five = card.kind === "claude" ? sessionFiveHour(id, Date.now()) : null;
+    // Claude's share is this session's part of the five-hour window. Codex's is the account's own, since Codex reports no split.
+    const five = card.kind === "claude" ? sessionFiveHour(id, Date.now()) : card.kind === "codex" ? codexAccountFiveHour(Date.now()) : null;
     card.dot.dataset.state = st;
     card.status.dataset.state = st;
     renderStatus(card, id, st, five);
+    renderContext(card, id);
+    renderSubagentButton(card, id);
     const notes = [];
-    if (state.tokens[id]) notes.push("Tokens this session has used: input and output, with cache reads left out.");
+    if (state.tokens[id]) notes.push("Tokens this session has used: input and output, with cache reads left out. Subagents are included.");
     if (five) notes.push(five.title);
     card.status.title = notes.join(" ");
     card.root.classList.toggle("is-working", st === "working");
@@ -926,15 +953,384 @@
     if (state.view === "home") renderHomeStatus();
   }
 
+  // The status strip under the toolbar, for the group on screen: its agents by state, the tokens it has used, the usage on
+  // this Mac, and the context the focused session has left. Redrawn whenever any of them changes.
   function updateSummary() {
     const group = visibleGroup();
-    const states = (group ? group.sessions : []).map((s) => stateOf(s.id));
-    const chip = (word) => {
-      const n = states.filter((st) => st === word).length;
-      return n ? h("span", { class: "stat" }, h("span", { class: "dot", "data-state": word }), `${n} ${word}`) : null;
-    };
-    // chip() returns null for an empty count; replaceChildren would print that as the text "null".
-    el.summary.replaceChildren(...[chip("working"), chip("done")].filter(Boolean));
+    el.summary.hidden = !group;
+    if (!group) return;
+    const sessions = group.sessions;
+    // A terminal runs no agent, so the agent counts leave it out. Its tokens are zero anyway.
+    const agentSessions = sessions.filter((s) => s.kind === "claude" || s.kind === "codex");
+    const count = (word) => agentSessions.filter((s) => stateOf(s.id) === word).length;
+    const states = [["working", "working"], ["idle", "idle"], ["done", "done"], ["exited", "stopped"]];
+    const tokens = sessions.reduce((sum, s) => sum + (state.tokens[s.id] || 0), 0);
+    el.summary.replaceChildren(
+      h("div", { class: "strip-group", role: "group", "aria-label": "Agents" },
+        ...states.map(([word, label]) => {
+          const n = count(word);
+          return h("span", { class: `strip-stat${n ? "" : " is-zero"}`, title: `${n} ${label}` },
+            h("span", { class: "dot", "data-state": word }), h("strong", {}, String(n)), label);
+        })),
+      h("span", { class: "strip-sep", "aria-hidden": "true" }),
+      h("div", { class: "strip-group", title: "Tokens this group's sessions have used, subagents included. Input and output count, cache reads do not." },
+        h("span", { class: "strip-label" }, "Tokens"),
+        h("strong", { class: "strip-value" }, formatTokens(tokens))),
+      h("span", { class: "strip-sep", "aria-hidden": "true" }),
+      ...usageStrip(),
+      h("span", { class: "strip-sep", "aria-hidden": "true" }),
+      contextStrip(sessions));
+  }
+
+  // ------------------------------------------------ context, usage and strip
+
+  // The share of its window a session has left, as a whole percent. The figure is what the backend read.
+  const leftPercent = (ctx) => (ctx.window > 0 ? Math.max(0, Math.min(100, Math.round((1 - ctx.used / ctx.window) * 100))) : 0);
+  // The meter turns amber at 30% left and red at 10%. Plenty left is the plain color.
+  const levelOf = (left) => (left <= 10 ? "critical" : left <= 30 ? "low" : "");
+
+  // The note behind a context figure: where the window comes from, and whether it is exact.
+  function contextNote(ctx, session) {
+    const name = session ? session.name : "This session";
+    const used = formatTokens(ctx.used);
+    const window = formatTokens(ctx.window);
+    if (ctx.exact) return `${name} has ${used} of its ${window}-token window in use. ${kindLabel(session ? session.kind : "claude")} reports that window, so the figure is exact.`;
+    return `${name} has about ${used} tokens in use, against an assumed ${window}-token window. Claude's own window is not on disk, so this assumes the default and grows it once the session passes 200K. Connect Claude's status line in Settings for the exact window.`;
+  }
+
+  // The context chip on a card: the share left, with a meter. A narrow card keeps the meter alone (see the CSS).
+  function renderContext(card, id) {
+    const ctx = state.context[id];
+    card.ctx.hidden = !ctx;
+    if (!ctx) return;
+    const left = leftPercent(ctx);
+    card.ctx.dataset.level = levelOf(left);
+    card.ctxFill.style.width = `${left}%`;
+    card.ctxText.textContent = `${ctx.exact ? "" : "~"}${left}% left`;
+    card.ctx.title = contextNote(ctx, findSession(id));
+  }
+
+  // A session's context left, as a hairline along the bottom of its sidebar row. Nothing is drawn before it has replied.
+  function contextBar(id) {
+    const ctx = state.context[id];
+    if (!ctx) return null;
+    const left = leftPercent(ctx);
+    return h("span", { class: "row-ctx", "data-level": levelOf(left), "aria-hidden": "true" },
+      h("span", { class: "row-ctx-fill", style: `width: ${left}%` }));
+  }
+
+  // The subagent button on a card: how many subagents the session started. A click opens the viewer on the list.
+  function renderSubagentButton(card, id) {
+    const n = state.subagentCount[id] || 0;
+    card.subsBtn.hidden = !n;
+    card.subsCount.textContent = String(n);
+    card.subsBtn.title = `${n} ${n === 1 ? "subagent" : "subagents"} this session started`;
+  }
+
+  // Codex's five-hour window for the account, from its own report. Codex does not split it between sessions, so every
+  // Codex card shows the same figure.
+  function codexAccountFiveHour(now) {
+    const win = usageSnapshot && usageSnapshot.codex ? usageSnapshot.codex.fiveHour : null;
+    if (!win) return null;
+    const usage = codexUsage(win, now);
+    return { percent: Math.round((usage.share || 0) * 100), title: `Codex's five-hour window for this account. ${usage.title}` };
+  }
+
+  // The usage meters in the strip. They show the same figures as the sidebar, and their notes are the hover text.
+  function usageStrip() {
+    return ["usage-claude", "usage-codex"]
+      .map((rowId) => document.getElementById(rowId))
+      .filter((row) => row && !row.hidden)
+      .map((row) => {
+        const level = row.classList.contains("is-hot") ? "is-hot" : row.classList.contains("is-warm") ? "is-warm" : "";
+        return h("div", { class: "strip-group", title: row.dataset.note || "" },
+          h("span", { class: "strip-label" }, row.querySelector(".usage-name").textContent),
+          h("span", { class: `strip-track ${level}`.trim(), "aria-hidden": "true" },
+            h("span", { class: "strip-fill", style: `width: ${row.querySelector(".usage-fill").style.width || "0%"}` })),
+          h("strong", { class: "strip-value" }, row.querySelector(".usage-text").textContent));
+      });
+  }
+
+  // The focused session's context in the strip. It reads "–" until the session has replied.
+  function contextStrip(sessions) {
+    const session = sessions.find((s) => s.id === state.focusedId);
+    const ctx = session ? state.context[session.id] : null;
+    if (!ctx) {
+      return h("div", { class: "strip-group strip-context", title: "The context left shows here for the focused Claude or Codex session, once it has replied." },
+        h("span", { class: "strip-label" }, "Context"),
+        h("strong", { class: "strip-value" }, "–"));
+    }
+    const left = leftPercent(ctx);
+    return h("div", { class: "strip-group strip-context", title: contextNote(ctx, session) },
+      h("span", { class: "strip-label strip-name" }, `Context · ${session.name}`),
+      h("span", { class: `strip-track ${levelOf(left)}`.trim(), "aria-hidden": "true" },
+        h("span", { class: "strip-fill", style: `width: ${left}%` })),
+      h("strong", { class: "strip-value" }, `${ctx.exact ? "" : "~"}${left}% left`));
+  }
+
+  // -------------------------------------------------------------- subagents
+
+  const SUBAGENT_REFRESH_MS = 2000;
+  // A subagent whose transcript grew this recently is still running, even when its session is not working.
+  const SUB_RECENT_MS = 120000;
+  const SUB_WORD = { working: "Running", done: "Done", exited: "Stopped" };
+  const ENTRY_LABEL = { user: "Message", assistant: "Agent", tool: "Tool", result: "Result" };
+  // The JSON of each session's last list. A read that finds nothing new redraws nothing.
+  const subagentSig = new Map();
+
+  // A subagent is done once its transcript shows its turn ended. Until then it is running while its session works or
+  // its transcript grew lately. Otherwise it stopped without finishing.
+  function subagentState(sub, parentWorking) {
+    if (!sub.busy) return "done";
+    if (parentWorking || Date.now() - sub.updatedMs < SUB_RECENT_MS) return "working";
+    return "exited";
+  }
+
+  // A session's subagents as sidebar rows, under its row while the row is expanded. A click opens the subagent in its card.
+  function subagentRows(session) {
+    if (!state.expanded.has(session.id)) return [];
+    const list = state.subagentLists[session.id];
+    if (!list) return [h("div", { class: "sub-row sub-empty" }, "Looking for subagents…")];
+    if (!list.length) return [h("div", { class: "sub-row sub-empty" }, "No subagents yet")];
+    const parentWorking = stateOf(session.id) === "working";
+    return list.map((sub) => {
+      const st = subagentState(sub, parentWorking);
+      const open = () => openViewer(session.id, sub.key);
+      return h("div", {
+        class: "sub-row",
+        "data-session": session.id,
+        "data-key": sub.key,
+        role: "button",
+        tabindex: "0",
+        style: `--depth: ${Math.max(1, sub.depth)}`,
+        title: `${sub.label}${sub.role ? ` · ${sub.role}` : ""} · ${SUB_WORD[st]}`,
+        onclick: open,
+        onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } },
+      },
+        h("span", { class: "dot", "data-state": st }),
+        h("span", { class: "sub-row-name" }, sub.label),
+        h("span", { class: "sub-row-meta" }, formatTokens(sub.tokens)));
+    });
+  }
+
+  // Opens or closes a session's subagents in the sidebar. Opening reads its list.
+  function toggleSubagents(id) {
+    if (state.expanded.has(id)) {
+      state.expanded.delete(id);
+    } else {
+      state.expanded.add(id);
+      loadSubagents(id);
+    }
+    renderSidebar();
+  }
+
+  // The chevron that opens a session's subagents under its row. A session with none keeps a blank space in its place, so the
+  // names line up.
+  function subagentToggle(session) {
+    const n = state.subagentCount[session.id] || 0;
+    if (!n) return h("span", { class: "session-toggle-gap", "aria-hidden": "true" });
+    const open = state.expanded.has(session.id);
+    return h("button", {
+      class: "session-toggle",
+      type: "button",
+      tabindex: "-1",
+      "aria-expanded": String(open),
+      "aria-label": `${open ? "Hide" : "Show"} the subagents of ${session.name}`,
+      title: `${open ? "Hide" : "Show"} ${n} ${n === 1 ? "subagent" : "subagents"}`,
+      html: ICONS.forward,
+      onclick: (e) => { e.stopPropagation(); toggleSubagents(session.id); },
+      ondblclick: (e) => e.stopPropagation(),
+    });
+  }
+
+  // Reads a session's subagents from the backend. The sidebar and an open viewer redraw only when the list changed.
+  async function loadSubagents(id) {
+    const session = findSession(id);
+    if (!session || !session.agent_id || !(session.kind === "claude" || session.kind === "codex")) return;
+    let list;
+    try {
+      list = await invoke("list_subagents", { kind: session.kind, agentId: session.agent_id });
+    } catch {
+      return; // keep the last list
+    }
+    const sig = JSON.stringify(list);
+    if (sig === subagentSig.get(id)) return;
+    subagentSig.set(id, sig);
+    state.subagentLists[id] = list;
+    if (state.expanded.has(id)) renderSidebar();
+    if (state.viewer && state.viewer.id === id) renderViewer(id);
+  }
+
+  // While a session's subagents show in the sidebar, or its viewer is open, they are read again every two seconds. An open
+  // subagent's transcript is read again too.
+  async function tickSubagents() {
+    if (document.hidden) return;
+    const ids = new Set(state.expanded);
+    if (state.viewer) ids.add(state.viewer.id);
+    for (const id of ids) await loadSubagents(id);
+    if (state.viewer && state.viewer.key) await loadViewerView();
+  }
+
+  // Opens a card's subagent viewer on the list (key null) or on one subagent. The card is brought on screen first.
+  function openViewer(id, key, { focus = true } = {}) {
+    if (!findSession(id)) return;
+    if (!isOnScreen(id)) focusSession(id);
+    state.viewer = { id, key };
+    state.viewerView = null;
+    renderViewer(id, { focus });
+    loadSubagents(id);
+    loadViewerView();
+  }
+
+  // Closes a card's subagent viewer, and gives the card back its terminal.
+  function closeViewer() {
+    const viewer = state.viewer;
+    if (!viewer) return;
+    state.viewer = null;
+    state.viewerView = null;
+    renderViewer(viewer.id);
+    focusCard(viewer.id);
+  }
+
+  // Moves to the next or previous subagent in the order the list gives, from the one open.
+  function stepViewer(delta) {
+    const viewer = state.viewer;
+    if (!viewer || !viewer.key) return;
+    const list = state.subagentLists[viewer.id] || [];
+    const next = list[list.findIndex((sub) => sub.key === viewer.key) + delta];
+    if (next) openViewer(viewer.id, next.key, { focus: false });
+  }
+
+  // Reads the open subagent's transcript again. Only that one is read, so a long session stays cheap.
+  async function loadViewerView() {
+    const viewer = state.viewer;
+    if (!viewer || !viewer.key) return;
+    const session = findSession(viewer.id);
+    if (!session || !session.agent_id) return;
+    const current = () => state.viewer && state.viewer.id === viewer.id && state.viewer.key === viewer.key;
+    try {
+      const view = await invoke("subagent_view", { kind: session.kind, agentId: session.agent_id, key: viewer.key });
+      // The viewer may have moved on while the read was in flight.
+      if (current()) {
+        state.viewerView = { key: viewer.key, view };
+        renderViewer(viewer.id);
+      }
+    } catch (err) {
+      if (current()) {
+        state.viewerView = { key: viewer.key, error: errorText(err) };
+        renderViewer(viewer.id);
+      }
+    }
+  }
+
+  // Draws a card's subagent viewer: the subagents the session started, or the one open. Its text is set as text, never as
+  // markup. A redraw keeps the scroll place, and a detail that was at its end stays at its end, so the newest entries of a
+  // running subagent stay in sight.
+  function renderViewer(id, { focus = false } = {}) {
+    const card = cards.get(id);
+    if (!card) return;
+    const viewer = state.viewer && state.viewer.id === id ? state.viewer : null;
+    card.root.classList.toggle("has-viewer", !!viewer);
+    card.subs.hidden = !viewer;
+    const session = findSession(id);
+    if (!viewer || !session) {
+      card.subs.replaceChildren();
+      return;
+    }
+    const mode = viewer.key ? "detail" : "list";
+    const before = card.subs.querySelector(".subs-body");
+    const modeChanged = card.subs.dataset.mode !== mode;
+    const pinned = !!before && before.scrollHeight - before.scrollTop - before.clientHeight < 24;
+    const scrolled = before ? before.scrollTop : 0;
+    card.subs.dataset.mode = mode;
+
+    const list = state.subagentLists[id] || [];
+    const parentWorking = stateOf(id) === "working";
+    const close = h("button", { class: "icon-btn", type: "button", title: "Close (Esc)", "aria-label": "Close subagents", onclick: closeViewer }, icon("close"));
+    let head;
+    let body;
+    if (!viewer.key) {
+      head = h("div", { class: "subs-head" },
+        h("div", { class: "subs-title" }, h("strong", {}, "Subagents"), h("span", {}, `${plural(list.length, "subagent")} in ${session.name}`)),
+        close);
+      if (state.subagentLists[id] === undefined) body = h("p", { class: "subs-empty" }, "Reading the subagents…");
+      else if (!list.length) body = h("p", { class: "subs-empty" }, "No subagents yet. When this session starts one, it is listed here.");
+      else body = h("div", { class: "subs-list" }, ...list.map((sub) => subagentItem(id, sub, parentWorking)));
+    } else {
+      const index = list.findIndex((sub) => sub.key === viewer.key);
+      const sub = index >= 0 ? list[index] : null;
+      const current = state.viewerView && state.viewerView.key === viewer.key ? state.viewerView : null;
+      // The subtitle carries the facts, so they stay in view while the transcript scrolls.
+      const facts = current && !current.error ? subagentFacts(current.view.subagent, parentWorking) : session.name;
+      head = h("div", { class: "subs-head" },
+        h("button", { class: "subs-back", type: "button", title: "All subagents (Esc)", "aria-label": "All subagents", onclick: () => openViewer(id, null, { focus: false }) }, icon("back"), "All"),
+        h("div", { class: "subs-title" }, h("strong", {}, sub ? sub.label : "Subagent"), h("span", {}, facts)),
+        h("div", { class: "subs-nav" },
+          h("button", { class: "icon-btn", type: "button", title: "Previous subagent (←)", "aria-label": "Previous subagent", disabled: index <= 0, onclick: () => stepViewer(-1) }, icon("back")),
+          h("span", { class: "subs-count" }, index >= 0 ? `${index + 1} of ${list.length}` : ""),
+          h("button", { class: "icon-btn", type: "button", title: "Next subagent (→)", "aria-label": "Next subagent", disabled: index < 0 || index >= list.length - 1, onclick: () => stepViewer(1) }, icon("forward"))),
+        close);
+      if (!current) body = h("p", { class: "subs-empty" }, "Reading the transcript…");
+      else if (current.error) body = h("p", { class: "subs-empty" }, current.error);
+      else body = subagentDetail(current.view);
+    }
+    const scroll = h("div", { class: "subs-body" }, body);
+    card.subs.replaceChildren(head, scroll);
+    // A new mode starts at its top, or at its newest entries for a subagent. Otherwise the place holds, unless it was at the end.
+    if (modeChanged) scroll.scrollTop = viewer.key ? scroll.scrollHeight : 0;
+    else scroll.scrollTop = pinned ? scroll.scrollHeight : scrolled;
+    if (focus) close.focus({ preventScroll: true });
+  }
+
+  // One subagent in a card's list: its state, its task and what it has used.
+  function subagentItem(id, sub, parentWorking) {
+    const st = subagentState(sub, parentWorking);
+    const meta = [SUB_WORD[st], sub.role, sub.model, `${formatTokens(sub.tokens)} tok`].filter(Boolean).join(" · ");
+    return h("button", { class: "sub-item", type: "button", onclick: () => openViewer(id, sub.key) },
+      h("span", { class: "dot", "data-state": st }),
+      h("span", { class: "sub-main" },
+        h("span", { class: "sub-label" }, sub.label),
+        h("span", { class: "sub-meta" }, meta)));
+  }
+
+  // A subagent's facts on one line: its state, role, model, tokens and last write.
+  function subagentFacts(sub, parentWorking) {
+    const st = subagentState(sub, parentWorking);
+    const updated = sub.updatedMs ? `updated ${formatAgo(Date.now() - sub.updatedMs)}` : "";
+    return [SUB_WORD[st], sub.role, sub.model, `${formatTokens(sub.tokens)} tokens`, updated].filter(Boolean).join(" · ");
+  }
+
+  // One subagent's transcript: a note when older messages are not kept, then every entry in order.
+  function subagentDetail(view) {
+    const earlier = view.total - view.entries.length;
+    return h("div", { class: "sub-detail" },
+      earlier > 0 ? h("p", { class: "sub-earlier" }, `${earlier} earlier ${earlier === 1 ? "message is" : "messages are"} not shown.`) : null,
+      view.entries.length
+        ? h("ol", { class: "sub-entries", "aria-label": "Transcript" }, ...view.entries.map(entryNode))
+        : h("p", { class: "subs-empty" }, "Nothing has been written yet."));
+  }
+
+  // One transcript entry. Its text is set as text.
+  function entryNode(entry) {
+    const label = entry.role === "tool" && entry.name ? `Tool · ${entry.name}` : ENTRY_LABEL[entry.role];
+    return h("li", { class: "sub-entry", "data-role": entry.role },
+      h("span", { class: "sub-entry-head" }, label),
+      h("pre", { class: "sub-entry-text" }, entry.text));
+  }
+
+  // Keys inside an open viewer. Escape goes back to the list, then closes the viewer. The arrows step through subagents.
+  function onViewerKey(e, id) {
+    const viewer = state.viewer;
+    if (!viewer || viewer.id !== id) return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      if (viewer.key) openViewer(id, null, { focus: false });
+      else closeViewer();
+    } else if (viewer.key && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+      e.preventDefault();
+      stepViewer(e.key === "ArrowLeft" ? -1 : 1);
+    }
   }
 
   function focusCard(id, { focusTerminal = true } = {}) {
@@ -943,6 +1339,7 @@
     el.groupList.querySelectorAll(".session-row").forEach((row) => row.classList.toggle("focused", row.dataset.id === id));
     const card = cards.get(id);
     if (focusTerminal && card && card.opened) card.term.focus();
+    updateSummary();
   }
 
   function toggleMaximize(id) {
@@ -1048,6 +1445,9 @@
       { label: "Restart", onSelect: () => restartWithConfirm(id) },
       { label: "Stop", disabled: !isLive(id), onSelect: () => stopSession(id) },
     ];
+    // A narrow card has no room for the subagent button, so the menu is where its viewer is reached.
+    const subagents = state.subagentCount[id] || 0;
+    if (subagents) items.push({ label: `Subagents (${subagents})…`, onSelect: () => openViewer(id, null) });
     if (groups().length > 1) {
       const current = groups().findIndex((g) => g.sessions.some((s) => s.id === id));
       items.push({ sep: true }, { heading: "Move to" });
@@ -1158,6 +1558,7 @@
   function renderView() {
     const view = state.view;
     el.toolbar.hidden = view !== "group";
+    el.summary.hidden = view !== "group";
     // The voice pill's idle dot floats in the toolbar, so it only shows where there is a toolbar.
     document.body.classList.toggle("view-group", view === "group");
     el.stage.hidden = view !== "group";
@@ -1175,8 +1576,9 @@
 
   // The whole list is rebuilt on every store change, which would drop keyboard focus. Note which row has it.
   function focusedRowSelector() {
-    const row = document.activeElement && document.activeElement.closest(".session-row, .group-row");
+    const row = document.activeElement && document.activeElement.closest(".session-row, .group-row, .sub-row[data-key]");
     if (!row || !el.groupList.contains(row)) return null;
+    if (row.dataset.key) return `.sub-row[data-session="${row.dataset.session}"][data-key="${row.dataset.key}"]`;
     if (row.dataset.id) return `.session-row[data-id="${row.dataset.id}"]`;
     return `.group[data-index="${row.closest(".group").dataset.index}"] > .group-row`;
   }
@@ -1235,7 +1637,7 @@
         ondragover: (e) => onGroupDragOver(e, index),
         ondragleave: (e) => onGroupDragLeave(e),
         ondrop: (e) => onGroupDrop(e, index),
-      }, header, group.sessions.length && !folded ? h("div", { class: "session-list" }, group.sessions.map((session, i) => sessionRow(session, index, i))) : null);
+      }, header, group.sessions.length && !folded ? h("div", { class: "session-list" }, group.sessions.flatMap((session, i) => [sessionRow(session, index, i), ...subagentRows(session)])) : null);
     }));
 
     const back = refocus && el.groupList.querySelector(refocus);
@@ -1268,10 +1670,13 @@
       ondrop: (e) => onRowDrop(e, groupIndex, sessionIndex),
       ondragleave: (e) => { if (!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.classList.remove("drop-before", "drop-after"); },
     },
+      subagentToggle(session),
       kindMark(session.kind),
       h("span", { class: "session-name" }, session.name),
+      state.subagentCount[id] ? h("span", { class: "session-subs", title: `${state.subagentCount[id]} subagents` }, String(state.subagentCount[id])) : null,
       moreButton(`Actions for ${session.name}`, (x, y, options) => openSessionMenu(id, x, y, options)),
-      h("span", { class: "dot", "data-session-dot": id }));
+      h("span", { class: "dot", "data-session-dot": id }),
+      contextBar(id));
   }
 
   // The "…" that shows on a hovered or focused sidebar row and opens the row's menu, like a right-click does.
@@ -2043,6 +2448,8 @@
     const parts = [plural(group.sessions.length, "session")];
     if (count("working")) parts.push(`${count("working")} working`);
     if (count("done")) parts.push(`${count("done")} finished`);
+    const tokens = group.sessions.reduce((sum, s) => sum + (state.tokens[s.id] || 0), 0);
+    if (tokens) parts.push(`${formatTokens(tokens)} tok`);
     // A dot on a mark only for the states worth a glance. Idle sessions stay plain.
     const mark = (session) => {
       const st = stateOf(session.id);
@@ -2822,6 +3229,7 @@
 
     if (usageSnapshot) renderCodexRows(usageSnapshot.codex, now);
     renderUsageDetail();
+    updateSummary();
   }
 
   function renderCodexRows(codex, now) {
@@ -4291,6 +4699,7 @@
       tickHomeWorking();
     }, 1000);
     setInterval(refreshTokens, TOKEN_REFRESH_MS);
+    setInterval(tickSubagents, SUBAGENT_REFRESH_MS);
     refreshTokens();
 
     let loaded = await attempt("load_store");

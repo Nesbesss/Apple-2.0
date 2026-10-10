@@ -1,25 +1,28 @@
-//! Tokens each Claude and Codex session has used, for the card header.
+//! Tokens each Claude and Codex session has used, for the card header, and how much of its context window is left.
 //!
 //! Claude: the session's transcript, and the subagent transcripts beside it, are read incrementally with the
 //! usage bar's reader, so a message counts once and cache reads are left out. Subagents count, because the
 //! tokens are spent on the session's behalf.
 //!
 //! Codex: the rollout's last usage report that has data. Codex keeps a running total, so the last one is the
-//! session's total. Its cached input is left out, as Claude's cache reads are.
+//! session's total. Its cached input is left out, as Claude's cache reads are. Subagents count too, for the same reason.
+//!
+//! The context figure (see `context`) and the subagent count (see `subagents`) come from the same transcripts.
 
-use crate::usage::{now_ms, window_start, Meter};
+use crate::{
+    context::{self, Context},
+    store::Kind,
+    subagents::{self, Subagent, View},
+    usage::{now_ms, window_start, Meter},
+};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::{
     collections::HashMap,
-    fs::{self, File},
-    io::{Read, Seek, SeekFrom},
+    fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    time::UNIX_EPOCH,
 };
-
-/// Bytes read from the end of a rollout. A usage report is a few hundred bytes, and the last one is near the end.
-const CODEX_TAIL_BYTES: u64 = 256 * 1024;
 
 /// Shared by every request, so each transcript is only read incrementally.
 #[derive(Default)]
@@ -31,6 +34,12 @@ pub struct Tokens {
     claude: HashMap<String, Meter>,
     claude_paths: HashMap<String, PathBuf>,
     codex_paths: HashMap<String, PathBuf>,
+    /// Claude's last main-chain input, with the transcript's length and modified time when it was read.
+    claude_inputs: HashMap<String, (u64, u64, Option<u64>)>,
+    /// Codex's context, with the rollout's length and modified time when it was read.
+    codex_contexts: HashMap<String, (u64, u64, Option<Context>)>,
+    /// Subagent readers and rollout headers, shared by every session.
+    subagents: subagents::Index,
 }
 
 #[derive(Deserialize)]
@@ -49,6 +58,10 @@ pub struct Count {
     pub tokens: u64,
     /// The session's weighted cost since the start of the block, in the units `Meter::window_units` uses.
     pub units: f64,
+    /// How much of the context window is left. None until the transcript has a reading.
+    pub context: Option<Context>,
+    /// The subagents the session started, nested ones included.
+    pub subagents: usize,
 }
 
 impl Tokens {
@@ -56,21 +69,77 @@ impl Tokens {
     pub fn count(&mut self, home: &Path, request: &Request) -> Option<u64> {
         let agent_id = request.agent_id.as_deref()?;
         match request.kind.as_str() {
-            "claude" => self.claude_count(&home.join(".claude/projects"), agent_id),
-            "codex" => self.codex_count(&home.join(".codex/sessions"), agent_id),
+            "claude" => self.claude_count(home, agent_id),
+            "codex" => self.codex_count(home, agent_id),
             _ => None,
         }
     }
 
-    fn claude_count(&mut self, projects: &Path, id: &str) -> Option<u64> {
-        let transcript = match self.claude_paths.get(id) {
-            Some(path) => path.clone(),
-            None => {
-                let path = find_claude(projects, id)?;
-                self.claude_paths.insert(id.to_string(), path.clone());
-                path
+    /// How full the session's context window is now. None when its transcript cannot be found or has no reading yet.
+    pub fn context(&mut self, home: &Path, request: &Request) -> Option<Context> {
+        let id = request.agent_id.as_deref()?;
+        match kind_of(&request.kind)? {
+            Kind::Claude => {
+                let transcript = self.transcript(home, Kind::Claude, id)?;
+                let (len, modified) = stamp(&transcript)?;
+                let input = match self.claude_inputs.get(id) {
+                    Some(&(l, m, input)) if l == len && m == modified => input,
+                    _ => {
+                        let input = context::claude_transcript_input(&transcript);
+                        self.claude_inputs.insert(id.to_string(), (len, modified, input));
+                        input
+                    }
+                };
+                context::claude_context(input, modified, context::claude_report(&home.join(".claude"), id))
             }
+            Kind::Codex => {
+                let rollout = self.transcript(home, Kind::Codex, id)?;
+                let (len, modified) = stamp(&rollout)?;
+                match self.codex_contexts.get(id) {
+                    Some(&(l, m, cached)) if l == len && m == modified => cached,
+                    _ => {
+                        let read = context::codex_context(&rollout);
+                        self.codex_contexts.insert(id.to_string(), (len, modified, read));
+                        read
+                    }
+                }
+            }
+            Kind::Terminal | Kind::Browser => None,
+        }
+    }
+
+    /// The subagents a session started, counted with their tokens. Empty when the session has no transcript yet.
+    pub fn subagent_totals(&mut self, home: &Path, request: &Request) -> subagents::Totals {
+        let (Some(id), Some(kind)) = (request.agent_id.as_deref(), kind_of(&request.kind)) else {
+            return subagents::Totals::default();
         };
+        let Some(transcript) = self.transcript(home, kind, id) else { return subagents::Totals::default() };
+        subagents::totals(&mut self.subagents, kind, &transcript, &codex_root(home), id)
+    }
+
+    /// The subagents of a session, listed for the card.
+    pub fn subagent_list(&mut self, home: &Path, kind: Kind, id: &str) -> Vec<Subagent> {
+        let Some(transcript) = self.transcript(home, kind, id) else { return Vec::new() };
+        subagents::list(&mut self.subagents, kind, &transcript, &codex_root(home), id)
+    }
+
+    /// One subagent of a session, for the viewer. None when the session has no subagent by that key.
+    pub fn subagent_view(&mut self, home: &Path, kind: Kind, id: &str, key: &str) -> Option<View> {
+        let transcript = self.transcript(home, kind, id)?;
+        subagents::view(&mut self.subagents, kind, &transcript, &codex_root(home), id, key)
+    }
+
+    /// The session's own transcript, found once and then remembered. None when the agent has not written one yet.
+    fn transcript(&mut self, home: &Path, kind: Kind, id: &str) -> Option<PathBuf> {
+        match kind {
+            Kind::Claude => cached(&mut self.claude_paths, id, || find_claude(&home.join(".claude/projects"), id)),
+            Kind::Codex => cached(&mut self.codex_paths, id, || find_codex(&codex_root(home), 0, id)),
+            Kind::Terminal | Kind::Browser => None,
+        }
+    }
+
+    fn claude_count(&mut self, home: &Path, id: &str) -> Option<u64> {
+        let transcript = self.transcript(home, Kind::Claude, id)?;
         let meter = self.claude.entry(id.to_string()).or_default();
         meter.read_new_lines(&transcript);
         for subagent in subagent_transcripts(&transcript) {
@@ -79,17 +148,42 @@ impl Tokens {
         Some(meter.billed_tokens())
     }
 
-    fn codex_count(&mut self, sessions: &Path, id: &str) -> Option<u64> {
-        let rollout = match self.codex_paths.get(id) {
-            Some(path) => path.clone(),
-            None => {
-                let path = find_codex(sessions, 0, id)?;
-                self.codex_paths.insert(id.to_string(), path.clone());
-                path
-            }
-        };
-        last_codex_total(&rollout)
+    fn codex_count(&mut self, home: &Path, id: &str) -> Option<u64> {
+        let rollout = self.transcript(home, Kind::Codex, id)?;
+        let own = last_codex_total(&rollout)?;
+        let descendants = subagents::totals(&mut self.subagents, Kind::Codex, &rollout, &codex_root(home), id);
+        Some(own + descendants.tokens)
     }
+}
+
+/// The agent a request names. Only Claude and Codex have transcripts.
+fn kind_of(name: &str) -> Option<Kind> {
+    match name {
+        "claude" => Some(Kind::Claude),
+        "codex" => Some(Kind::Codex),
+        _ => None,
+    }
+}
+
+fn codex_root(home: &Path) -> PathBuf {
+    home.join(".codex/sessions")
+}
+
+/// The path remembered for `id`, found by `find` the first time it is asked for.
+fn cached(paths: &mut HashMap<String, PathBuf>, id: &str, find: impl FnOnce() -> Option<PathBuf>) -> Option<PathBuf> {
+    if let Some(path) = paths.get(id) {
+        return Some(path.clone());
+    }
+    let path = find()?;
+    paths.insert(id.to_string(), path.clone());
+    Some(path)
+}
+
+/// A file's length and modified time in Unix millis. A cached reading is kept while both stay the same.
+fn stamp(path: &Path) -> Option<(u64, u64)> {
+    let meta = fs::metadata(path).ok()?;
+    let modified = meta.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_millis() as u64;
+    Some((meta.len(), modified))
 }
 
 /// Claude keeps transcripts at projects/<encoded cwd>/<session id>.jsonl. Searching each folder avoids
@@ -134,35 +228,9 @@ fn find_codex(dir: &Path, depth: usize, id: &str) -> Option<PathBuf> {
     None
 }
 
-/// The newest usage report in a rollout that has data, as the session's total: input that was not cached,
-/// plus output.
+/// The session's own total from the newest Codex report: input that was not cached, plus output.
 fn last_codex_total(path: &Path) -> Option<u64> {
-    let mut file = File::open(path).ok()?;
-    let len = file.metadata().ok()?.len();
-    let from = len.saturating_sub(CODEX_TAIL_BYTES);
-    file.seek(SeekFrom::Start(from)).ok()?;
-    let mut tail = Vec::new();
-    file.read_to_end(&mut tail).ok()?;
-    let text = String::from_utf8_lossy(&tail);
-    let mut lines: Vec<&str> = text.lines().collect();
-    if from > 0 && !lines.is_empty() {
-        lines.remove(0); // the read may have begun partway through a line
-    }
-    for line in lines.iter().rev() {
-        if !line.contains("\"token_count\"") {
-            continue;
-        }
-        let Ok(value) = serde_json::from_str::<Value>(line) else { continue };
-        let usage = &value["payload"]["info"]["total_token_usage"];
-        if !usage.is_object() {
-            continue; // a report without data, such as the first one of a session
-        }
-        let input = usage["input_tokens"].as_u64().unwrap_or(0);
-        let cached = usage["cached_input_tokens"].as_u64().unwrap_or(0);
-        let output = usage["output_tokens"].as_u64().unwrap_or(0);
-        return Some(input.saturating_sub(cached) + output);
-    }
-    None
+    context::codex_total(&context::codex_last_info(path)?["total_token_usage"])
 }
 
 #[tauri::command]
@@ -185,7 +253,13 @@ pub async fn session_tokens(
                     .as_deref()
                     .and_then(|id| tokens.claude.get(id))
                     .map_or(0.0, |meter| meter.units_since(since));
-                Some(Count { id: request.id.clone(), tokens: total, units })
+                Some(Count {
+                    id: request.id.clone(),
+                    tokens: total,
+                    units,
+                    context: tokens.context(&home, request),
+                    subagents: tokens.subagent_totals(&home, request).count,
+                })
             })
             .collect())
     })
@@ -278,5 +352,75 @@ mod tests {
         append(&rollout, "\n");
         let mut tokens = Tokens::default();
         assert_eq!(tokens.count(&scratch.0, &request), Some(1000 + 500), "the newest report is the total");
+    }
+
+    #[test]
+    fn a_claude_session_reports_its_context_and_how_many_subagents_it_started() {
+        let scratch = Scratch::new("context");
+        let projects = scratch.0.join(".claude/projects");
+        let transcript = projects.join("-work-api").join("s3.jsonl");
+        let usage = r#"{"input_tokens":3,"cache_creation_input_tokens":1000,"cache_read_input_tokens":120000,"output_tokens":50}"#;
+        let line = format!(r#"{{"type":"assistant","timestamp":"2026-10-09T10:00:00.000Z","message":{{"id":"m9","model":"claude-sonnet-5-5","usage":{usage}}}}}"#);
+        append(&transcript, &format!("{line}\n"));
+        append(&projects.join("-work-api").join("s3").join("subagents").join("agent-a1.jsonl"), &format!("{line}\n"));
+
+        let mut tokens = Tokens::default();
+        let request = claude_request("s3");
+        // The input of the last call is the context: input, cache writes and cache reads, not the output.
+        assert_eq!(tokens.context(&scratch.0, &request), Some(Context { used: 121_003, window: 200_000, exact: false }));
+        assert_eq!(tokens.subagent_totals(&scratch.0, &request).count, 1);
+    }
+
+    #[test]
+    fn a_codex_session_counts_the_tokens_of_its_subagents() {
+        let scratch = Scratch::new("codex-subagents");
+        let root = scratch.0.join(".codex/sessions");
+        let parent_id = "01a0fd3b-8f6e-7191-a8d1-15e905f89233";
+        let child_id = "01a0fd3b-8f6e-7191-a8d1-15e905f89234";
+        let parent = root.join("2026/10/09").join(format!("rollout-2026-10-09T09-00-00-{parent_id}.jsonl"));
+        append(
+            &parent,
+            &format!(
+                "{}\n{}\n",
+                format!(r#"{{"timestamp":"2026-10-09T09:00:00Z","type":"session_meta","payload":{{"id":"{parent_id}","source":"cli"}}}}"#),
+                r#"{"timestamp":"2026-10-09T09:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":400,"output_tokens":200},"last_token_usage":{"input_tokens":700,"cached_input_tokens":400,"output_tokens":50},"model_context_window":258400}}}"#
+            ),
+        );
+        let child = root.join("2026/10/09").join(format!("rollout-2026-10-09T09-30-00-{child_id}.jsonl"));
+        append(
+            &child,
+            &format!(
+                "{}\n{}\n",
+                format!(
+                    r#"{{"timestamp":"2026-10-09T09:30:00Z","type":"session_meta","payload":{{"id":"{child_id}","source":{{"subagent":{{"thread_spawn":{{"parent_thread_id":"{parent_id}","depth":1,"agent_nickname":"Dalton"}}}}}}}}}}"#
+                ),
+                r#"{"timestamp":"2026-10-09T09:31:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":500,"cached_input_tokens":100,"output_tokens":100}}}}"#
+            ),
+        );
+        let request = Request { id: "codex".into(), kind: "codex".into(), agent_id: Some(parent_id.into()) };
+        let mut tokens = Tokens::default();
+        assert_eq!(tokens.count(&scratch.0, &request), Some(800 + 500), "own 800, and the subagent's 500");
+        assert_eq!(tokens.context(&scratch.0, &request), Some(Context { used: 700, window: 258_400, exact: true }));
+        assert_eq!(tokens.subagent_totals(&scratch.0, &request).count, 1);
+    }
+
+    /// Prints what a card would show for real sessions. Read only. Run with:
+    /// `NESA_SESSIONS="claude:<id>,codex:<id>" cargo test real_sessions -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn real_sessions() {
+        let home = dirs::home_dir().unwrap();
+        let mut tokens = Tokens::default();
+        for item in std::env::var("NESA_SESSIONS").unwrap().split(',') {
+            let (kind, id) = item.split_once(':').unwrap();
+            let request = Request { id: id.into(), kind: kind.into(), agent_id: Some(id.into()) };
+            println!("{kind} {id}: tokens {:?} context {:?}", tokens.count(&home, &request), tokens.context(&home, &request));
+            let totals = tokens.subagent_totals(&home, &request);
+            println!("  subagents: {} with {} tokens", totals.count, totals.tokens);
+            let agent = if kind == "claude" { Kind::Claude } else { Kind::Codex };
+            for subagent in tokens.subagent_list(&home, agent, id) {
+                println!("  {subagent:?}");
+            }
+        }
     }
 }
