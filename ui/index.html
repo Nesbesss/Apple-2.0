@@ -16,7 +16,7 @@
     <nav class="nav" aria-label="Views">
       <button class="nav-item" type="button" data-view="home" title="Home (⌘0)"><span class="nav-icon" data-icon="home"></span>Home</button>
     </nav>
-    <div class="sidebar-section" title="⌘] next session · ⌘[ previous session · ⌘J next finished session">
+    <div class="sidebar-section" title="Keyboard shortcuts: ⌘/">
       <span class="section-label" data-tauri-drag-region>Groups</span>
       <button class="icon-btn" id="new-group" title="New group" aria-label="New group" data-icon="plus"></button>
     </div>
@@ -448,6 +448,26 @@
       <div class="dialog-actions">
         <button type="button" class="btn" id="session-cancel">Cancel</button>
         <button type="submit" class="btn btn-primary" id="session-start">Start</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="palette" class="dialog palette" aria-label="Quick switcher">
+    <input class="input palette-input" id="palette-input" type="text" role="combobox" aria-expanded="true" aria-controls="palette-list" aria-autocomplete="list" aria-label="Search sessions, groups and actions" placeholder="Search sessions, groups and actions" autocomplete="off" spellcheck="false">
+    <div class="palette-list" id="palette-list" role="listbox" aria-label="Results"></div>
+    <div class="palette-foot" aria-hidden="true">
+      <span><kbd>&uarr;</kbd><kbd>&darr;</kbd> to move</span>
+      <span><kbd>&crarr;</kbd> to open</span>
+      <span><kbd>esc</kbd> to close</span>
+    </div>
+  </dialog>
+
+  <dialog id="shortcuts" class="dialog shortcuts" aria-labelledby="shortcuts-title">
+    <form method="dialog">
+      <h2 class="dialog-title" id="shortcuts-title">Keyboard shortcuts</h2>
+      <div class="shortcuts-body" id="shortcuts-body"></div>
+      <div class="dialog-actions">
+        <button type="submit" class="btn btn-primary" id="shortcuts-close">Close</button>
       </div>
     </form>
   </dialog>
